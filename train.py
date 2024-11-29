@@ -138,6 +138,7 @@ if __name__=="__main__":
     # Step2
     wandb.define_metric("step2/iter")
     wandb.define_metric("step2/*", step_metric="step2/iter")
+    model.fc.reset_parameters()
     loralib.set_used_lora(model, [1])
     _, trainable_params = loralib.get_lora_params(model, fc=True, idxs=[1])
     optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
