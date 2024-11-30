@@ -165,3 +165,4 @@ data/*/
 experiments*/
 wandb/
 demo.py
+_deprecated/

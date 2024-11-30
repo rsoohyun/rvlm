@@ -6,7 +6,7 @@ class CLIP_FT(nn.Module):
     def __init__(self, model_arch, device, n_cls=2):
         super().__init__()
         
-        self.model, _ = load(model_arch, device=device)
+        self.model, self.preprocess = load(model_arch, device=device)
         self.model.float()      # mixed precision -> underflow/overflow in optimizer.step()
         for param in self.model.parameters():
             param.requires_grad = False
