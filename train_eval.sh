@@ -34,7 +34,7 @@ run_experiment() {
     if [ "$USE_GATING" = true ]; then
         SAVE_DIR+="@gating"
     fi
-    SAVE_DIR+="@r${R}/"
+    SAVE_DIR+="@r${R}"
 
     # Train
     CUDA_VISIBLE_DEVICES=$GPU python train_multiple.py \

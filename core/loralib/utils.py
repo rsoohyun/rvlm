@@ -141,6 +141,6 @@ def set_used_lora(model, idxs, visual_only=True):
         for name, submodule in target_block.named_modules():
             idx = name.split('.')[0]
             param = '.'.join(name.split('.')[1:])
-            if isinstance(submodule, loralib.LoRAInjectedLinear):
+            if isinstance(submodule, LoRAInjectedLinear):
                 layer = eval(f"{target_block_name}[{idx}].{param}")
                 layer.used_lora = idxs  # Set the indices of active LoRAs

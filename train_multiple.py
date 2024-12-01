@@ -46,15 +46,20 @@ if __name__ == "__main__":
     utils.set_seed(args.seed)
     save_dir = args.save_dir
     save_dir += f"@numlora_{args.num_lora}" 
-    save_dir += f"@feature_{args.lambda_feature_ortho:.2f}"
-    save_dir += f"@param_{args.lambda_param_ortho:.2f}"
+    save_dir += f"@feature_{args.lambda_feature_ortho}"
+    save_dir += f"@param_{args.lambda_param_ortho}"
     if args.use_gating:
         save_dir += "@gating"
 
     save_dir += f"@r{args.r}/"
     os.makedirs(save_dir, exist_ok=True)
 
-    wandb.init(project="rvlm", config=args)
+    if args.resume_id:
+        wandb.init(project="rvlm", id=args.resume_id, resume=True)
+    else:
+        wandb.init(project="rvlm")
+    wandb.config.update(args)
+    wandb.run.name = save_dir.split('/')[-2]
 
     # Load data and model
     if args.arch == "CLIP":
@@ -82,12 +87,13 @@ if __name__ == "__main__":
     def get_output(name):
         def hook(model, input, output):
             all_features[name] = output
-
         return hook
 
     for name, submodule in model.model.visual.transformer.resblocks.named_modules():
-        if isinstance(submodule, loralib.LoRAInjectedLinear):
-            submodule.register_forward_hook(get_output(name))
+        idx = name.split('.')[0]
+        param = '.'.join(name.split('.')[1:])
+        if ("lora" in name) and name.endswith('_A'): 
+            eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
 
     # Optimizer
     _, trainable_params = loralib.get_lora_params(model, fc=True, idxs=list(range(args.num_lora)))
@@ -110,8 +116,8 @@ if __name__ == "__main__":
             # Feature orthogonality loss
             feature_ortho_loss = 0.0
             if args.lambda_feature_ortho > 0.0:
-                feature_list = [all_features[k] for k in sorted(all_features.keys())]
-                feature_ortho_loss = feature_ortho_loss_fn(feature_list, args.l1)
+                #feature_list = [all_features[k] for k in sorted(all_features.keys())]
+                feature_ortho_loss = feature_ortho_loss_fn(all_features, args.num_lora, args.l1)
 
             # Parameter orthogonality loss
             param_ortho_loss = 0.0
