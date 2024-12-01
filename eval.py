@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 
 from data import load_dataset
 from core import clip, loralib, utils
-
+import re
 
 # https://github.com/chingyaoc/debias_vl.git
 def infer(model, data_loader, desc=''):
@@ -83,7 +83,7 @@ if __name__=="__main__":
     args = parser.parse_args()
     
     utils.set_seed(args.seed)
-    args.r = int(args.save_dir.split('@r')[-1])
+    args.r = int(args.save_dir[:-1].split('@r')[-1])
     args.lora_mlp = "@mlp" in args.save_dir
     
     ## Load data and model
@@ -130,6 +130,34 @@ if __name__=="__main__":
         worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc="Eval CLIP+LoRA2"))
         accs_by_group_str = f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]"
         print("== Step2) CLIP+LoRA2 ==")
+        print(f"Average accuracy: {avg_acc:.2f}")
+        print(f"Worst Group accuracy: {worst_acc:.2f}")
+        print(f"Acc by group: {accs_by_group_str}")
+
+    # MultiLoRA
+    elif "@MultiLoRA" in args.save_dir:
+        print("Evaluating MultiLoRA...")
+
+        num_lora_match = re.search(r"@num_lora(\d+)", args.save_dir)
+        if num_lora_match:
+            num_lora = int(num_lora_match.group(1))
+        else:
+            raise ValueError("cannot find num_lora in save_dir")
+
+        loralib.apply_lora(model, num_lora, args.r, args.lora_alpha, args.lora_dropout, mlp=False)
+        loralib.load_lora(model, args.save_dir + f"/epoch{args.num_lora}.pt")  #
+
+        if "gating" in args.save_dir:  # save_dir에 'gating' 포함 여부 확인
+            print("Using gating mechanism for evaluation.")
+            loralib.set_used_lora(model, list(range(args.num_lora)))  
+        else:
+            print("Using cumulative sum of all LoRA components.")
+            loralib.set_used_lora(model, list(range(args.num_lora))) 
+
+        model.eval()
+        worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc="Eval CLIP+MultiLoRA"))
+        accs_by_group_str = f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]"
+        print("== CLIP+MultiLoRA ==")
         print(f"Average accuracy: {avg_acc:.2f}")
         print(f"Worst Group accuracy: {worst_acc:.2f}")
         print(f"Acc by group: {accs_by_group_str}")

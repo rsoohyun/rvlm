@@ -79,7 +79,7 @@ def find_modules(model, ancestor_class=["ResidualAttentionBlock"], search_class=
                 # Otherwise, yield it
                 yield parent, name, module
 
-def apply_lora(model, num_lora=1, r=4, lora_alpha=1, lora_dropout=0., visual_only=True, mlp=False):
+def apply_lora(model, num_lora=1, r=4, lora_alpha=1, lora_dropout=0., visual_only=True, mlp=False, use_gating=False):
     target_blocks = [model.model.visual.transformer.resblocks] if visual_only else [model.model.visual.transformer.resblocks, model.model.transformer.resblocks]
     search_classes = [nn.Linear, nn.MultiheadAttention] if mlp else [nn.MultiheadAttention]
     device, dtype = target_blocks[0][0].mlp.c_fc.weight.device, target_blocks[0][0].mlp.c_fc.weight.dtype
@@ -87,11 +87,12 @@ def apply_lora(model, num_lora=1, r=4, lora_alpha=1, lora_dropout=0., visual_onl
     for target_block in target_blocks:
         for _module, name, _child_module in find_modules(target_block, ["ResidualAttentionBlock"], search_classes):
             if _child_module.__class__ == nn.Linear:
-                _tmp = LoRAInjectedLinear(_child_module, num_lora, r, lora_alpha, lora_dropout).to(device).to(dtype)
+                _tmp = LoRAInjectedLinear(_child_module, num_lora, r, lora_alpha, lora_dropout, use_gating=use_gating).to(device).to(dtype)
                 _module._modules[name] = _tmp
             if _child_module.__class__ == nn.MultiheadAttention:
-                _tmp = LoRAInjectedMultiheadAttention(_child_module, mlp, num_lora, r, lora_alpha, lora_dropout).to(device).to(dtype)
+                _tmp = LoRAInjectedMultiheadAttention(_child_module, mlp, num_lora, r, lora_alpha, lora_dropout, use_gating=use_gating).to(device).to(dtype)
                 _module._modules[name] = _tmp
+
 
 def get_lora_params(model, fc=True, idxs=[]):
     names, params = [], []
@@ -125,12 +126,21 @@ def load_lora(model, path, device='cuda:0'):
     model.load_state_dict(torch.load(path, map_location={device: 'cuda:0'}), strict=False)
     
 def set_used_lora(model, idxs, visual_only=True):
-    target_blocks = [model.model.visual.transformer.resblocks] if visual_only else [model.model.visual.transformer.resblocks, model.model.transformer.resblocks]
-    target_block_names = ["model.model.visual.transformer.resblocks"] if visual_only else ["model.model.visual.transformer.resblocks", "model.model.transformer.resblocks"]
-    
+    target_blocks = (
+        [model.model.visual.transformer.resblocks]
+        if visual_only
+        else [model.model.visual.transformer.resblocks, model.model.transformer.resblocks]
+    )
+    target_block_names = (
+        ["model.model.visual.transformer.resblocks"]
+        if visual_only
+        else ["model.model.visual.transformer.resblocks", "model.model.transformer.resblocks"]
+    )
+
     for target_block, target_block_name in zip(target_blocks, target_block_names):
         for name, submodule in target_block.named_modules():
             idx = name.split('.')[0]
             param = '.'.join(name.split('.')[1:])
-            if isinstance(submodule, LoRAInjectedLinear): 
-                eval(f"{target_block_name}[{idx}].{param}").used_lora = idxs
+            if isinstance(submodule, loralib.LoRAInjectedLinear):
+                layer = eval(f"{target_block_name}[{idx}].{param}")
+                layer.used_lora = idxs  # Set the indices of active LoRAs

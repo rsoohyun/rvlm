@@ -19,11 +19,13 @@ if __name__=="__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--arch", type=str, default="CLIP")
     parser.add_argument("--dataset", type=str, default="waterbird")
-    
+    parser.add_argument("--n_cls", type=int, default=2)
+
     parser.add_argument("--r", type=int, default=4)
     parser.add_argument("--lora_alpha", type=float, default=1.)
     parser.add_argument("--lora_dropout", type=float, default=0.)
     parser.add_argument("--lora_mlp", action="store_true")
+    parser.add_argument("--lora_w_pretrain", action="store_true")
     
     parser.add_argument("--epochs_step1", type=int, default=4)
     parser.add_argument("--epochs_step2", type=int, default=4)
@@ -40,28 +42,28 @@ if __name__=="__main__":
     parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@SepLoRA")
     
     parser.add_argument("--resume_id", type=str, default="")
+
     args = parser.parse_args()
     
     ## Set ENV
+    utils.set_seed(args.seed)
+    save_dir = args.save_dir
+    if args.lora_mlp: save_dir += "@mlp"
+    if args.lora_w_pretrain: save_dir += "@wp"
+    save_dir += f"@r{args.r}/"
+    os.makedirs(save_dir, exist_ok=True)
+    
+
     if args.resume_id:
         wandb.init(project="rvlm", id=args.resume_id, resume=True)
     else:
         wandb.init(project="rvlm")
     wandb.config.update(args)
-    wandb.run.name = f"{args.save_dir.split('/')[-1]}@r{args.r}"
-    
-    utils.set_seed(args.seed)
-    save_dir = f"{args.save_dir}@mlp@r{args.r}/" if args.lora_mlp else f"{args.save_dir}@r{args.r}/"
-    os.makedirs(save_dir, exist_ok=True)
-    
+    wandb.run.name = save_dir.split('/')[-2]
+
     ## Load data and model
-    train_dataset = load_dataset(args.data_dir, args.dataset, "train")
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
-    # valid_dataset = load_dataset(args.data_dir, args.dataset, "valid")
-    # valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
-    
     if args.arch == "CLIP":
-        model = clip.CLIP_FT("ViT-L/14", "cuda", n_cls=train_dataset.n_classes)
+        model = clip.CLIP_FT("ViT-L/14", "cuda", n_cls=args.n_cls)
     else:
         raise NotImplementedError(f'{args.arch} is not implemented yet.')
     print('{} w/o LoRA: {:.1f}M'.format(args.arch, sum(param.numel() for param in model.parameters())/1000000.0))
@@ -69,6 +71,12 @@ if __name__=="__main__":
     loralib.apply_lora(model, 2, args.r, args.lora_alpha, args.lora_dropout, mlp=args.lora_mlp)
     print('{} w/  LoRA: {:.1f}M'.format(args.arch, sum(param.numel() for param in model.parameters())/1000000.0))
     
+    train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
+    # valid_dataset = load_dataset(args.data_dir, args.dataset, "valid", model.preprocess)
+    # valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
+    
+
     cls_loss_fn = nn.CrossEntropyLoss()
     ortho_loss_fn = losses.OrthogonalLoss()
     
@@ -138,6 +146,7 @@ if __name__=="__main__":
     # Step2
     wandb.define_metric("step2/iter")
     wandb.define_metric("step2/*", step_metric="step2/iter")
+    model.fc.reset_parameters()
     loralib.set_used_lora(model, [1])
     _, trainable_params = loralib.get_lora_params(model, fc=True, idxs=[1])
     optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
@@ -148,12 +157,19 @@ if __name__=="__main__":
             all_features[name] = output
         return hook
     
-    for name, submodule in model.model.visual.transformer.resblocks.named_modules():
-        idx = name.split('.')[0]
-        param = '.'.join(name.split('.')[1:])
-        if ("lora" in name) and name.endswith('_A'): 
-            eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
-    
+    if args.lora_w_pretrain:
+        for name, submodule in model.model.visual.transformer.resblocks.named_modules():
+            idx = name.split('.')[0]
+            param = '.'.join(name.split('.')[1:])
+            if isinstance(submodule, loralib.LoRAInjectedLinear):
+                eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
+    else:
+        for name, submodule in model.model.visual.transformer.resblocks.named_modules():
+            idx = name.split('.')[0]
+            param = '.'.join(name.split('.')[1:])
+            if ("lora" in name) and name.endswith('_A'): 
+                eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
+
     iteration = 0
     train_losses, train_cls_losses, train_ortho_losses = [], [], []
     train_preds, train_labels, train_spurious = [], [], []
@@ -171,11 +187,21 @@ if __name__=="__main__":
             outputs = model(images.to("cuda"))
             cls_loss = cls_loss_fn(outputs, attrs[:,0].to("cuda"))
             
-            all_keys = [k for k in all_features.keys() if "lora0" in k]
-            all_features1, all_features2 = [], []
-            for k in all_keys:
-                all_features1.append(all_features[k].detach())
-                all_features2.append(all_features[k.replace("lora0", "lora1")])
+             if args.lora_w_pretrain:
+                all_keys = list(all_features.keys())
+                all_features1 = [all_features[k] for k in all_keys]
+                with torch.no_grad():
+                    loralib.set_used_lora(model, [0])
+                    model(images.to("cuda"))
+                    all_features2 = [all_features[k] for k in all_keys]
+                    loralib.set_used_lora(model, [1])
+            else:
+                all_keys = [k for k in all_features.keys() if "lora0" in k]
+                all_features1, all_features2 = [], []
+                for k in all_keys:
+                    all_features1.append(all_features[k].detach())
+                    all_features2.append(all_features[k.replace("lora0", "lora1")])
+                    
             ortho_loss = ortho_loss_fn(all_features1, all_features2, args.l1)
             
             loss = args.lambda_cls * cls_loss + args.lambda_ortho * ortho_loss

@@ -318,6 +318,7 @@ class LoRAInjectedLinear(nn.Module):
         r: int = 0, 
         lora_alpha: int = 1, 
         lora_dropout: float = 0.,
+        use_gating: bool = False,  # Add gating flag
         **kwargs
     ):
         super().__init__()
@@ -328,7 +329,8 @@ class LoRAInjectedLinear(nn.Module):
         self.org_linear = nn.Linear(self.in_features, self.out_features, bias=use_bias)
         with torch.no_grad():
             self.org_linear.weight.data.copy_(original_module.weight.data)
-            if use_bias: self.org_linear.bias.data.copy_(original_module.bias.data)
+            if use_bias: 
+                self.org_linear.bias.data.copy_(original_module.bias.data)
         
         self.r = r
         self.lora_alpha = lora_alpha
@@ -338,6 +340,11 @@ class LoRAInjectedLinear(nn.Module):
             self.lora_dropout = lambda x: x
             
         self.num_lora = num_lora
+        self.use_gating = use_gating  # Store gating flag
+        
+        if self.use_gating:
+            self.gating_params = nn.Parameter(torch.ones(num_lora))  # Gating parameters
+
         for i in range(self.num_lora):
             self.add_module(f'lora{i}_A', nn.Linear(self.in_features, self.r, bias=False))
             self.add_module(f'lora{i}_B', nn.Linear(self.r, self.out_features, bias=False))
@@ -346,8 +353,6 @@ class LoRAInjectedLinear(nn.Module):
         self.scaling = self.lora_alpha / self.r
         
     def init_lora_params(self):
-        # initialize B the same way as the default for nn.Linear and A to zero
-        # this is different than what is described in the paper but should not affect performance
         for i in range(self.num_lora):
             nn.init.kaiming_uniform_(eval(f'self.lora{i}_A.weight'), a=math.sqrt(5))
             nn.init.zeros_(eval(f'self.lora{i}_B.weight'))
@@ -355,11 +360,16 @@ class LoRAInjectedLinear(nn.Module):
     def forward(self, x: torch.Tensor):
         result = self.org_linear(x)
         for i in range(self.num_lora):
-            tmp = eval(f'self.lora{i}_A')(x)
-            tmp = eval(f'self.lora{i}_B')(tmp)
             if i in self.used_lora:
-                result += self.lora_dropout(tmp) * self.scaling
+                tmp = eval(f'self.lora{i}_A')(x)
+                tmp = eval(f'self.lora{i}_B')(tmp)
+                if self.use_gating:
+                    gating = torch.sigmoid(self.gating_params[i])  # Apply gating if enabled
+                    result += self.lora_dropout(tmp) * self.scaling * gating
+                else:
+                    result += self.lora_dropout(tmp) * self.scaling
         return result
+
 
 
 class LoRAInjectedMultiheadAttention(nn.Module):
