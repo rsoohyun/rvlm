@@ -80,11 +80,15 @@ if __name__=="__main__":
     parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@SepLoRA@r4")
     
     parser.add_argument("--eval_org", action="store_true")
+    parser.add_argument("--use_gating", action="store_true")
+
     args = parser.parse_args()
     
     utils.set_seed(args.seed)
     args.r = int(args.save_dir.split('@r')[-1])
     args.lora_mlp = "@mlp" in args.save_dir
+    
+
     
     ## Load data and model
     test_dataset = load_dataset(args.data_dir, args.dataset, "test")
@@ -141,11 +145,15 @@ if __name__=="__main__":
             num_lora = int(num_lora_match.group(1))
         else:
             raise ValueError("cannot find num_lora in save_dir")
+        if "gating" in args.save_dir:
+            args.use_gating = True
 
-        loralib.apply_lora(model, num_lora, args.r, args.lora_alpha, args.lora_dropout, mlp=True)
+        
+
+        loralib.apply_lora(model, num_lora, args.r, args.lora_alpha, args.lora_dropout, mlp=True, use_gating=args.use_gating)
         loralib.load_lora(model, args.save_dir + f"/epoch{args.epochs}.pt")  #
 
-        if "gating" in args.save_dir: 
+        if args.use_gating: 
             #print("Using gating mechanism for evaluation.")
             loralib.set_used_lora(model, list(range(num_lora)))  
         else:

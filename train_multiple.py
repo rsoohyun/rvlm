@@ -71,8 +71,6 @@ if __name__ == "__main__":
     loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, mlp=True, use_gating=args.use_gating)
     print(f"{args.arch} w/ LoRA: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
-
-    
     train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
 

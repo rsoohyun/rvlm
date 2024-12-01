@@ -1,0 +1,14 @@
+Experiment Results for num_lora=8, r=4
+==================================================
+Evaluation on "./experiments/models/CLIP@MultiLoRA@numlora_8@feature_0.0@param_0.0@r4"
+Average accuracy: 94.25
+Worst Group accuracy: 81.93
+Acc by group: [99.87, 91.26, 81.93, 97.35]
+
+==================================================
+Evaluation on "./experiments/models/CLIP@MultiLoRA@numlora_8@feature_0.0@param_0.0@gating@r4"
+Average accuracy: 94.86
+Worst Group accuracy: 83.96
+Acc by group: [99.87, 92.15, 83.96, 97.66]
+
+==================================================
