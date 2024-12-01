@@ -1,2 +1,8 @@
 Experiment Results for num_lora=2, r=4
 ==================================================
+Evaluation on "./experiments/models/CLIP@MultiLoRA@numlora_2@feature_0.0@param_0.0@r4"
+Average accuracy: 91.65
+Worst Group accuracy: 73.68
+Acc by group: [99.87, 88.43, 73.68, 92.06]
+
+==================================================

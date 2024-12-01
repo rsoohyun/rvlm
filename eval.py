@@ -142,7 +142,7 @@ if __name__=="__main__":
         else:
             raise ValueError("cannot find num_lora in save_dir")
 
-        loralib.apply_lora(model, num_lora, args.r, args.lora_alpha, args.lora_dropout, mlp=False)
+        loralib.apply_lora(model, num_lora, args.r, args.lora_alpha, args.lora_dropout, mlp=True)
         loralib.load_lora(model, args.save_dir + f"/epoch{args.epochs}.pt")  #
 
         if "gating" in args.save_dir: 
