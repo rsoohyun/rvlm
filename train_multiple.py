@@ -27,7 +27,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--wd", type=float, default=5e-5)
-    parser.add_argument("--epochs", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=5)
 
     parser.add_argument("--lambda_cls", type=float, default=1.0)
     parser.add_argument("--lambda_feature_ortho", type=float, default=0.0)
@@ -45,14 +45,14 @@ if __name__ == "__main__":
     # Set ENV
     utils.set_seed(args.seed)
     save_dir = args.save_dir
-    save_dir += f"@num_lora{args.num_lora}" 
-    save_dir += "@feature_{args.lambda_feature_ortho:.2f}"
-    save_dir += "@param_{args.lambda_param_ortho:.2f}"
+    save_dir += f"@numlora_{args.num_lora}" 
+    save_dir += f"@feature_{args.lambda_feature_ortho:.2f}"
+    save_dir += f"@param_{args.lambda_param_ortho:.2f}"
     if args.use_gating:
         save_dir += "@gating"
 
     save_dir += f"@r{args.r}/"
-    os.makedirs(args.save_dir, exist_ok=True)
+    os.makedirs(save_dir, exist_ok=True)
 
     wandb.init(project="rvlm", config=args)
 
@@ -174,7 +174,7 @@ if __name__ == "__main__":
                 train_preds, train_labels, train_spurious = [], [], []
 
         # Save checkpoint
-        loralib.save_lora(model, os.path.join(args.save_dir, f"epoch{epoch}.pt"), idxs=list(range(args.num_lora)))
-        torch.save(optimizer.state_dict(), os.path.join(args.save_dir, f"epoch{epoch}_opt.pt"))
+        loralib.save_lora(model, os.path.join(save_dir, f"epoch{epoch}.pt"), idxs=list(range(args.num_lora)))
+        torch.save(optimizer.state_dict(), os.path.join(save_dir, f"epoch{epoch}_opt.pt"))
 
     wandb.finish()

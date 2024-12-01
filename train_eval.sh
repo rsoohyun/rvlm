@@ -8,13 +8,17 @@ R=$3
 # Common variables
 BATCH_SIZE=32
 SAVE_BASE_DIR="./experiments/models"
-SAVE_DIR="${SAVE_BASE_DIR}/CLIP@MultiLoRA"
+RESULT_FILE="./results_numlora${NUM_LORA}_r${R}.txt"  # 결과 파일 경로에 num_lora와 r 반영
 
 # Lambda values
 LAMBDA_CLS=1.0
 LAMBDA_FEATURE_VALUES=(0.0 1.0)
 LAMBDA_PARAM_VALUES=(0.0 1.0)
 USE_GATING_VALUES=(false true)
+
+# Initialize result file
+echo "Experiment Results for num_lora=${NUM_LORA}, r=${R}" > $RESULT_FILE
+echo "==================================================" >> $RESULT_FILE
 
 # Function: Run training and evaluation
 run_experiment() {
@@ -24,6 +28,7 @@ run_experiment() {
 
     # Create save directory
     SAVE_DIR="${SAVE_BASE_DIR}/CLIP@MultiLoRA"
+    SAVE_DIR+="@numlora_${NUM_LORA}"
     SAVE_DIR+="@feature_${LAMBDA_FEATURE}"
     SAVE_DIR+="@param_${LAMBDA_PARAM}"
     if [ "$USE_GATING" = true ]; then
@@ -42,7 +47,10 @@ run_experiment() {
 
     # Evaluate
     CUDA_VISIBLE_DEVICES=$GPU python eval.py \
-        --save_dir $SAVE_DIR
+        --save_dir $SAVE_DIR >> $RESULT_FILE
+
+    # Add a separator in the result file
+    echo -e "\n==================================================" >> $RESULT_FILE
 }
 
 # Main loop: Run all combinations
@@ -54,4 +62,4 @@ for LAMBDA_FEATURE in "${LAMBDA_FEATURE_VALUES[@]}"; do
     done
 done
 
-echo "All experiments completed."
+echo "All experiments completed. Results saved in $RESULT_FILE."

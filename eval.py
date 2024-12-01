@@ -137,15 +137,16 @@ if __name__=="__main__":
     # MultiLoRA
     elif "@MultiLoRA" in args.save_dir:
         print("Evaluating MultiLoRA...")
+        print(args.save_dir)
 
-        num_lora_match = re.search(r"@num_lora(\d+)", args.save_dir)
+        num_lora_match = re.search(r"@numlora_(\d+)", args.save_dir)
         if num_lora_match:
             num_lora = int(num_lora_match.group(1))
         else:
             raise ValueError("cannot find num_lora in save_dir")
 
         loralib.apply_lora(model, num_lora, args.r, args.lora_alpha, args.lora_dropout, mlp=False)
-        loralib.load_lora(model, args.save_dir + f"/epoch{args.num_lora}.pt")  #
+        loralib.load_lora(model, args.save_dir + f"/epoch{args.epochs}.pt")  #
 
         if "gating" in args.save_dir:  # save_dir에 'gating' 포함 여부 확인
             print("Using gating mechanism for evaluation.")
