@@ -8,12 +8,12 @@ R=$3
 # Common variables
 BATCH_SIZE=32
 SAVE_BASE_DIR="./experiments/models"
-RESULT_FILE="./results_numlora${NUM_LORA}_r${R}.txt"  # 결과 파일 경로에 num_lora와 r 반영
+RESULT_FILE="./results_numlora${NUM_LORA}_r${R}_gaitng.txt"  # 결과 파일 경로에 num_lora와 r 반영
 
 # Lambda values
-LAMBDA_FEATURE_VALUES=(0.0 1.0)
-LAMBDA_PARAM_VALUES=(0.0 1.0)
-USE_GATING_VALUES=(false true)
+LAMBDA_FEATURE_VALUES=(1.0 0.0)
+LAMBDA_PARAM_VALUES=(1.0 0.0)
+USE_GATING_VALUES=(true)
 
 # Initialize result file
 echo "Experiment Results for num_lora=${NUM_LORA}, r=${R}" > $RESULT_FILE
@@ -35,14 +35,14 @@ run_experiment() {
     fi
     SAVE_DIR+="@r${R}"
 
-    # # Train
-    # CUDA_VISIBLE_DEVICES=$GPU python train_multiple.py \
-    #     --num_lora $NUM_LORA \
-    #     --r $R \
-    #     --batch_size $BATCH_SIZE \
-    #     --lambda_feature_ortho $LAMBDA_FEATURE \
-    #     --lambda_param_ortho $LAMBDA_PARAM \
-    #     $(if [ "$USE_GATING" = true ]; then echo "--use_gating"; fi)
+    # Train
+    CUDA_VISIBLE_DEVICES=$GPU python train_multiple.py \
+        --num_lora $NUM_LORA \
+        --r $R \
+        --batch_size $BATCH_SIZE \
+        --lambda_feature_ortho $LAMBDA_FEATURE \
+        --lambda_param_ortho $LAMBDA_PARAM \
+        $(if [ "$USE_GATING" = true ]; then echo "--use_gating"; fi)
 
     # Evaluate
     CUDA_VISIBLE_DEVICES=$GPU python eval.py \

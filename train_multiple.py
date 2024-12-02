@@ -27,7 +27,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--wd", type=float, default=5e-5)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=4)
 
     parser.add_argument("--lambda_cls", type=float, default=1.0)
     parser.add_argument("--lambda_feature_ortho", type=float, default=0.0)
@@ -71,6 +71,7 @@ if __name__ == "__main__":
     loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, mlp=True, use_gating=args.use_gating)
     print(f"{args.arch} w/ LoRA: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
+
     train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
 
@@ -84,7 +85,7 @@ if __name__ == "__main__":
 
     def get_output(name):
         def hook(model, input, output):
-            all_features[name] = output
+            all_features[name] = output.to('cuda:0')
         return hook
 
     for name, submodule in model.model.visual.transformer.resblocks.named_modules():
@@ -93,9 +94,10 @@ if __name__ == "__main__":
         if ("lora" in name) and name.endswith('_A'): 
             eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
 
+    model = nn.DataParallel(model).cuda()
     # Optimizer
-    _, trainable_params = loralib.get_lora_params(model, fc=True, idxs=list(range(args.num_lora)))
-    optimizer = optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.wd)
+    _, trainable_params = loralib.get_lora_params(model, fc=True, idxs=list(range(args.num_lora)), use_gating=args.use_gating)
+    optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.wd)
 
     # Training loop
     iteration = 0
@@ -120,7 +122,7 @@ if __name__ == "__main__":
             # Parameter orthogonality loss
             param_ortho_loss = 0.0
             if args.lambda_param_ortho > 0.0:
-                param_ortho_loss = param_ortho_loss_fn(model)
+                param_ortho_loss = param_ortho_loss_fn(model.module)
 
             # Combined loss
             loss = (
@@ -178,7 +180,7 @@ if __name__ == "__main__":
                 train_preds, train_labels, train_spurious = [], [], []
 
         # Save checkpoint
-        loralib.save_lora(model, os.path.join(save_dir, f"epoch{epoch}.pt"), idxs=list(range(args.num_lora)))
+        loralib.save_lora(model.module, os.path.join(save_dir, f"epoch{epoch}.pt"), idxs=list(range(args.num_lora)))
         torch.save(optimizer.state_dict(), os.path.join(save_dir, f"epoch{epoch}_opt.pt"))
 
     wandb.finish()

@@ -1,14 +1,36 @@
-Experiment Results for num_lora=8, r=4
-==================================================
 Evaluation on "./experiments/models/CLIP@MultiLoRA@numlora_8@feature_0.0@param_0.0@r4"
-Average accuracy: 94.25
-Worst Group accuracy: 81.93
-Acc by group: [99.87, 91.26, 81.93, 97.35]
+Average accuracy: 95.56
+Worst Group accuracy: 79.28
+Acc by group: [99.91, 95.74, 79.28, 95.95]
 
 ==================================================
 Evaluation on "./experiments/models/CLIP@MultiLoRA@numlora_8@feature_0.0@param_0.0@gating@r4"
-Average accuracy: 94.86
-Worst Group accuracy: 83.96
-Acc by group: [99.87, 92.15, 83.96, 97.66]
+
+==================================================
+Evaluation on "./experiments/models/CLIP@MultiLoRA@numlora_8@feature_0.0@param_1.0@r4"
+Average accuracy: 94.65
+Worst Group accuracy: 81.93
+Acc by group: [99.82, 93.04, 81.93, 94.86]
+
+==================================================
+Evaluation on "./experiments/models/CLIP@MultiLoRA@numlora_8@feature_0.0@param_1.0@gating@r4"
+
+==================================================
+Evaluation on "./experiments/models/CLIP@MultiLoRA@numlora_8@feature_1.0@param_0.0@r4"
+Average accuracy: 94.22
+Worst Group accuracy: 62.93
+Acc by group: [99.96, 97.87, 62.93, 92.52]
+
+==================================================
+Evaluation on "./experiments/models/CLIP@MultiLoRA@numlora_8@feature_1.0@param_0.0@gating@r4"
+
+==================================================
+Evaluation on "./experiments/models/CLIP@MultiLoRA@numlora_8@feature_1.0@param_1.0@r4"
+Average accuracy: 94.74
+Worst Group accuracy: 82.09
+Acc by group: [99.82, 93.26, 82.09, 94.70]
+
+==================================================
+Evaluation on "./experiments/models/CLIP@MultiLoRA@numlora_8@feature_1.0@param_1.0@gating@r4"
 
 ==================================================

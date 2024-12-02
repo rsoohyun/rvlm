@@ -340,10 +340,7 @@ class LoRAInjectedLinear(nn.Module):
             self.lora_dropout = lambda x: x
             
         self.num_lora = num_lora
-        self.use_gating = use_gating  # Store gating flag
         
-        if self.use_gating:
-            self.gating_params = nn.Parameter(torch.ones(num_lora))  # Gating parameters
 
         for i in range(self.num_lora):
             self.add_module(f'lora{i}_A', nn.Linear(self.in_features, self.r, bias=False))
@@ -357,17 +354,17 @@ class LoRAInjectedLinear(nn.Module):
             nn.init.kaiming_uniform_(eval(f'self.lora{i}_A.weight'), a=math.sqrt(5))
             nn.init.zeros_(eval(f'self.lora{i}_B.weight'))
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, gate_values=None):
         result = self.org_linear(x)
+
         for i in range(self.num_lora):
             if i in self.used_lora:
                 tmp = eval(f'self.lora{i}_A')(x)
                 tmp = eval(f'self.lora{i}_B')(tmp)
-                if self.use_gating:
-                    gating = torch.sigmoid(self.gating_params[i])  # Apply gating if enabled
-                    result += self.lora_dropout(tmp) * self.scaling * gating
-                else:
-                    result += self.lora_dropout(tmp) * self.scaling
+                lora_output = self.lora_dropout(tmp) * self.scaling
+                if gate_values is not None:
+                    lora_output *= gate_values[:, :, i].unsqueeze(-1)
+                result += lora_output 
         return result
 
 
@@ -381,6 +378,7 @@ class LoRAInjectedMultiheadAttention(nn.Module):
         r: int = 0, 
         lora_alpha: int = 1, 
         lora_dropout: float = 0.,
+        use_gating=False,
         **kwargs
     ):
         super().__init__()
@@ -395,6 +393,7 @@ class LoRAInjectedMultiheadAttention(nn.Module):
         self.batch_first = original_module.batch_first
         self.head_dim = original_module.head_dim
         
+        self.num_lora = num_lora
         self.use_bias = original_module.in_proj_bias is not None
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.use_bias)
         self.k_proj = nn.Linear(self.embed_dim, self.kdim, bias=self.use_bias)
@@ -426,10 +425,14 @@ class LoRAInjectedMultiheadAttention(nn.Module):
                 self.out_proj.bias.data.copy_(original_module.out_proj.bias.data)
             
         # apply lora
-        self.q_proj = LoRAInjectedLinear(self.q_proj, num_lora, r, lora_alpha, lora_dropout)
-        self.k_proj = LoRAInjectedLinear(self.k_proj, num_lora, r, lora_alpha, lora_dropout)
-        self.v_proj = LoRAInjectedLinear(self.v_proj, num_lora, r, lora_alpha, lora_dropout)
-        if mlp: self.out_proj = LoRAInjectedLinear(self.out_proj, num_lora, r, lora_alpha, lora_dropout)
+        self.q_proj = LoRAInjectedLinear(self.q_proj, num_lora, r, lora_alpha, lora_dropout, use_gating=use_gating)
+        self.k_proj = LoRAInjectedLinear(self.k_proj, num_lora, r, lora_alpha, lora_dropout, use_gating=use_gating)
+        self.v_proj = LoRAInjectedLinear(self.v_proj, num_lora, r, lora_alpha, lora_dropout, use_gating=use_gating)
+        if mlp: self.out_proj = LoRAInjectedLinear(self.out_proj, num_lora, r, lora_alpha, lora_dropout, use_gating=use_gating)
+
+        self.use_gating = use_gating  # Store gating flag
+        if self.use_gating:
+            self.gating_layer = nn.Linear(self.embed_dim, num_lora)
 
     def forward(self, query, key, value, key_padding_mask= None, need_weights= True, attn_mask= None, average_attn_weights=True, is_causal=False):
         why_not_fast_path = ''
@@ -470,15 +473,22 @@ class LoRAInjectedMultiheadAttention(nn.Module):
         tgt_len, bsz, embed_dim = query.shape
         src_len, _, _ = key.shape
         
+        # gating values
+        gate_values = None
+        if self.use_gating:
+            flat_query = query.view(-1, embed_dim)  # (tgt_len * bsz, embed_dim)
+            gate_values = torch.sigmoid(self.gating_layer(flat_query))
+            gate_values = gate_values.view(tgt_len, bsz, self.num_lora)
+
         if isinstance(embed_dim, torch.Tensor):
             # embed_dim can be a tensor when JIT tracing
             head_dim = embed_dim.div(self.num_heads, rounding_mode="trunc")
         else:
             head_dim = embed_dim // self.num_heads
             
-        q = self.q_proj(query)
-        k = self.k_proj(key)
-        v = self.v_proj(value)
+        q = self.q_proj(query, gate_values)
+        k = self.k_proj(key, gate_values)
+        v = self.v_proj(value, gate_values)
         
         if attn_mask is not None:
             # ensure attn_mask's dim is 3
@@ -596,6 +606,6 @@ class LoRAInjectedMultiheadAttention(nn.Module):
             attn_output_weights = None
         
         if self.batch_first and is_batched:
-            return attn_output.transpose(1, 0), attn_output_weights
+            return attn_output.transpose(1, 0), attn_output_weights, gate_values
         else:
-            return attn_output, attn_output_weights
+            return attn_output, attn_output_weights, gate_values

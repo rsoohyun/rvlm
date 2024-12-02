@@ -87,14 +87,14 @@ def apply_lora(model, num_lora=1, r=4, lora_alpha=1, lora_dropout=0., visual_onl
     for target_block in target_blocks:
         for _module, name, _child_module in find_modules(target_block, ["ResidualAttentionBlock"], search_classes):
             if _child_module.__class__ == nn.Linear:
-                _tmp = LoRAInjectedLinear(_child_module, num_lora, r, lora_alpha, lora_dropout, use_gating=use_gating).to(device).to(dtype)
+                _tmp = LoRAInjectedLinear(_child_module, num_lora, r, lora_alpha, lora_dropout, use_gating=use_gating).cuda().to(dtype)
                 _module._modules[name] = _tmp
             if _child_module.__class__ == nn.MultiheadAttention:
-                _tmp = LoRAInjectedMultiheadAttention(_child_module, mlp, num_lora, r, lora_alpha, lora_dropout, use_gating=use_gating).to(device).to(dtype)
+                _tmp = LoRAInjectedMultiheadAttention(_child_module, mlp, num_lora, r, lora_alpha, lora_dropout, use_gating=use_gating).cuda().to(dtype)
                 _module._modules[name] = _tmp
 
 
-def get_lora_params(model, fc=True, idxs=[]):
+def get_lora_params(model, fc=True, idxs=[], use_gating=False):
     names, params = [], []
     for name, param in model.named_parameters():
         requires_grad = False
@@ -105,6 +105,11 @@ def get_lora_params(model, fc=True, idxs=[]):
                 params.append(param)
                 break
         if fc and name.startswith("fc."):
+            requires_grad = True
+            names.append(name)
+            params.append(param)
+
+        if use_gating and 'gating_layer' in name:
             requires_grad = True
             names.append(name)
             params.append(param)
