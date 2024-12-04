@@ -51,7 +51,7 @@ def lora_state_dict(model: nn.Module, bias: str = 'none') -> Dict[str, torch.Ten
 
 # soohyun
 # https://github.com/cloneofsimo/lora/blob/master/lora_diffusion/lora.py
-def find_modules(model, ancestor_class=["ResidualAttentionBlock"], search_class=[], exclude_children_of=[LoRAInjectedLinear, LoRAInjectedMultiheadAttention]):
+def find_modules(model, ancestor_class=["ResidualAttentionBlock"], search_class=[], exclude_children_of=[LoRAInjectedLinear, LoRAInjectedMultiheadAttention, nn.MultiheadAttention]):
     if ancestor_class is not None:
         ancestors = (
             module
@@ -79,10 +79,14 @@ def find_modules(model, ancestor_class=["ResidualAttentionBlock"], search_class=
                 # Otherwise, yield it
                 yield parent, name, module
 
-def apply_lora(model, num_lora=1, r=4, lora_alpha=1, lora_dropout=0., visual_only=True, mlp=False):
+def apply_lora(model, num_lora=1, r=4, lora_alpha=1, lora_dropout=0., visual_only=True, lora_modules=[]):
     target_blocks = [model.model.visual.transformer.resblocks] if visual_only else [model.model.visual.transformer.resblocks, model.model.transformer.resblocks]
-    search_classes = [nn.Linear, nn.MultiheadAttention] if mlp else [nn.MultiheadAttention]
-    device, dtype = target_blocks[0][0].mlp.c_fc.weight.device, target_blocks[0][0].mlp.c_fc.weight.dtype
+    search_classes = []
+    if "mlp" in lora_modules: 
+        search_classes.append(nn.Linear)
+        lora_modules.remove("mlp")
+    if len(lora_modules)>0: search_classes.append(nn.MultiheadAttention)
+    device, dtype = model.device, model.model.dtype
     
     for target_block in target_blocks:
         for _module, name, _child_module in find_modules(target_block, ["ResidualAttentionBlock"], search_classes):
@@ -90,7 +94,7 @@ def apply_lora(model, num_lora=1, r=4, lora_alpha=1, lora_dropout=0., visual_onl
                 _tmp = LoRAInjectedLinear(_child_module, num_lora, r, lora_alpha, lora_dropout).to(device).to(dtype)
                 _module._modules[name] = _tmp
             if _child_module.__class__ == nn.MultiheadAttention:
-                _tmp = LoRAInjectedMultiheadAttention(_child_module, mlp, num_lora, r, lora_alpha, lora_dropout).to(device).to(dtype)
+                _tmp = LoRAInjectedMultiheadAttention(_child_module, lora_modules, num_lora, r, lora_alpha, lora_dropout).to(device).to(dtype)
                 _module._modules[name] = _tmp
 
 def get_lora_params(model, fc=True, idxs=[]):
@@ -118,6 +122,7 @@ def save_lora(model, path, fc=True, idxs=[]):
         if fc and (key in ["fc.weight", "fc.bias"]): keys.append(key)
         for i in idxs:
             if f'lora{i}' in key: keys.append(key)
+            break
     checkpoint = {k:v for k,v in checkpoint.items() if k in keys}
     torch.save(checkpoint, path)
     

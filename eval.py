@@ -66,16 +66,17 @@ if __name__=="__main__":
     parser.add_argument("--dataset", type=str, default="waterbird")
     
     parser.add_argument("--r", type=int, default=4)
+    parser.add_argument("--num_lora", type=int, default=2)
     parser.add_argument("--lora_alpha", type=float, default=1.)
     parser.add_argument("--lora_dropout", type=float, default=0.)
-    parser.add_argument("--lora_mlp", action="store_true")
-    
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--num_workers", type=int, default=16)
+    parser.add_argument("--lora_modules", type=str, default="q,k,v,out,mlp")
     
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--epochs_step1", type=int, default=4)
     parser.add_argument("--epochs_step2", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--num_workers", type=int, default=16)
+    
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@SepLoRA@r4")
     
@@ -84,7 +85,8 @@ if __name__=="__main__":
     
     utils.set_seed(args.seed)
     args.r = int(args.save_dir.split('@r')[-1])
-    args.lora_mlp = "@mlp" in args.save_dir
+    lora_idxs = list(range(args.num_lora))
+    lora_modules = [m for m in args.lora_modules.split(',') if m in ['q', 'k', 'v', 'out', 'mlp']]
     
     ## Load data and model
     test_dataset = load_dataset(args.data_dir, args.dataset, "test")
@@ -107,8 +109,21 @@ if __name__=="__main__":
         print(f"Worst Group accuracy: {worst_acc:.2f}")
         print(f"Acc by group: {accs_by_group_str}")
     
-    if '@SepLoRA' in args.save_dir:
-        loralib.apply_lora(model, 2, args.r, args.lora_alpha, args.lora_dropout, mlp=args.lora_mlp)
+    if '@LoRA' in args.save_dir:
+        loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules=lora_modules)
+        loralib.load_lora(model, args.save_dir + f'/epoch{args.epochs}.pt')
+        loralib.set_used_lora(model, lora_idxs)
+        model.eval()
+        
+        worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc="Eval CLIP+LoRA"))
+        accs_by_group_str = f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]"
+        print("== CLIP+LoRA ==")
+        print(f"Average accuracy: {avg_acc:.2f}")
+        print(f"Worst Group accuracy: {worst_acc:.2f}")
+        print(f"Acc by group: {accs_by_group_str}")
+    
+    elif '@SepLoRA' in args.save_dir:
+        loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules=lora_modules)
         
         # lora1 eval
         loralib.load_lora(model, args.save_dir + f'/step1_epoch{args.epochs_step1}.pt')
@@ -125,6 +140,33 @@ if __name__=="__main__":
         # lora2 eval
         loralib.load_lora(model, args.save_dir + f'/step1_epoch{args.epochs_step1}_step2_epoch{args.epochs_step2}.pt')
         loralib.set_used_lora(model, [1])
+        model.eval()
+
+        worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc="Eval CLIP+LoRA2"))
+        accs_by_group_str = f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]"
+        print("== Step2) CLIP+LoRA2 ==")
+        print(f"Average accuracy: {avg_acc:.2f}")
+        print(f"Worst Group accuracy: {worst_acc:.2f}")
+        print(f"Acc by group: {accs_by_group_str}")
+        
+    elif '@OLoRA' in args.save_dir:
+        loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules=lora_modules)
+        
+        # lora1 eval
+        loralib.load_lora(model, args.save_dir + f'/step1_epoch{args.epochs_step1}.pt')
+        loralib.set_used_lora(model, [0])
+        model.eval()
+        
+        worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc="Eval CLIP+LoRA1"))
+        accs_by_group_str = f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]"
+        print("== Step1) CLIP+LoRA1 ==")
+        print(f"Average accuracy: {avg_acc:.2f}")
+        print(f"Worst Group accuracy: {worst_acc:.2f}")
+        print(f"Acc by group: {accs_by_group_str}")
+        
+        # lora2 eval
+        loralib.load_lora(model, args.save_dir + f'/step1_epoch{args.epochs_step1}_step2_epoch{args.epochs_step2}.pt')
+        loralib.set_used_lora(model, [0,1])
         model.eval()
 
         worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc="Eval CLIP+LoRA2"))

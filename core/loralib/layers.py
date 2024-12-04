@@ -366,7 +366,7 @@ class LoRAInjectedMultiheadAttention(nn.Module):
     def __init__(
         self, 
         original_module: nn.MultiheadAttention, 
-        mlp: bool = False,
+        lora_modules: list = ["q","v"],
         num_lora: int=1,
         r: int = 0, 
         lora_alpha: int = 1, 
@@ -416,10 +416,10 @@ class LoRAInjectedMultiheadAttention(nn.Module):
                 self.out_proj.bias.data.copy_(original_module.out_proj.bias.data)
             
         # apply lora
-        self.q_proj = LoRAInjectedLinear(self.q_proj, num_lora, r, lora_alpha, lora_dropout)
-        self.k_proj = LoRAInjectedLinear(self.k_proj, num_lora, r, lora_alpha, lora_dropout)
-        self.v_proj = LoRAInjectedLinear(self.v_proj, num_lora, r, lora_alpha, lora_dropout)
-        if mlp: self.out_proj = LoRAInjectedLinear(self.out_proj, num_lora, r, lora_alpha, lora_dropout)
+        if "q" in lora_modules: self.q_proj = LoRAInjectedLinear(self.q_proj, num_lora, r, lora_alpha, lora_dropout)
+        if "k" in lora_modules: self.k_proj = LoRAInjectedLinear(self.k_proj, num_lora, r, lora_alpha, lora_dropout)
+        if "v" in lora_modules: self.v_proj = LoRAInjectedLinear(self.v_proj, num_lora, r, lora_alpha, lora_dropout)
+        if "out" in lora_modules: self.out_proj = LoRAInjectedLinear(self.out_proj, num_lora, r, lora_alpha, lora_dropout)
 
     def forward(self, query, key, value, key_padding_mask= None, need_weights= True, attn_mask= None, average_attn_weights=True, is_causal=False):
         why_not_fast_path = ''
