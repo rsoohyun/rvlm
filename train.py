@@ -24,7 +24,7 @@ if __name__=="__main__":
     parser.add_argument("--n_cls", type=int, default=2)
     
     parser.add_argument("--r", type=int, default=4)
-    parser.add_argument("--num_lora", type=int, default=2)
+    parser.add_argument("--num_lora", type=int, default=4)
     parser.add_argument("--lora_alpha", type=float, default=1.)
     parser.add_argument("--lora_dropout", type=float, default=0.)
     parser.add_argument("--lora_modules", type=str, default="q,v")
