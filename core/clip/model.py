@@ -238,6 +238,13 @@ class VisionTransformer(nn.Module):
             x = x @ self.proj
 
         return x
+    
+    def early_exit_proj(self, x: torch.Tensor):
+        x = x.permute(1, 0, 2)
+        x = self.ln_post(x[:, 0, :])
+        if self.proj is not None:
+            x = x @ self.proj
+        return x
 
 
 class CLIP(nn.Module):

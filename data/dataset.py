@@ -1,10 +1,13 @@
 import os
+import json
+import itertools
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from PIL import Image
 
+from .utils import generate_desc
 
 
 class WaterBirdsDataset(Dataset): 
@@ -19,6 +22,7 @@ class WaterBirdsDataset(Dataset):
         self.root = root
         self.transform = transform
         self.y_array = self.metadata_df['y'].values
+        self.class_labels = ['landbird', 'waterbird']
         self.p_array = self.metadata_df['place'].values
         self.n_classes = np.unique(self.y_array).size
         self.confounder_array = self.metadata_df['place'].values
@@ -33,6 +37,15 @@ class WaterBirdsDataset(Dataset):
         self.p_counts = (
                 torch.arange(self.n_places).unsqueeze(1) == torch.from_numpy(self.p_array)).sum(1).float()
         self.filename_array = self.metadata_df['img_filename'].values
+        
+        if os.path.exists(f"{root}/descs.json"):
+            with open(f"{root}/descs.json", 'r') as f:
+                self.class_descs = json.load(f)
+        else:
+            self.class_descs = generate_desc(self.class_labels)
+            with open(f"{root}/descs.json", 'w') as f:
+                json.dump(self.class_descs, f, indent='\t')
+        self.all_descs = list(set(itertools.chain(*list(self.class_descs.values()))))
 
     def __len__(self):
         return len(self.metadata_df)

@@ -1,6 +1,7 @@
 from torch import nn
 
 from .clip import *
+from .model import *
 
 class CLIP_FT(nn.Module):
     def __init__(self, model_arch, device, n_cls=2):

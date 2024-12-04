@@ -22,7 +22,6 @@ class OrthoFeatLoss(nn.Module):
 class OrthoParamLoss(nn.Module):
     def __init__(self, pairs):
         super().__init__()
-        self.loss_fn = F.cosine_similarity
         self.pairs = pairs
     
     def forward(self, params):
