@@ -144,12 +144,11 @@ if __name__=="__main__":
                 tmp_features = defaultdict(list)
                 if args.lora_w_pretrain:
                     all_keys = list(all_features.keys())
-                    with torch.no_grad():
-                        for i in lora_idxs:
-                            loralib.set_used_lora(model, [i])
-                            model(images.to("cuda"))
-                            tmp_features[i] = [all_features[k] for k in all_keys]
-                        loralib.set_used_lora(model, lora_idxs)
+                    for i in lora_idxs:
+                        loralib.set_used_lora(model, [i])
+                        model(images.to("cuda"))
+                        tmp_features[i] = [all_features[k] for k in all_keys]
+                    loralib.set_used_lora(model, lora_idxs)
                 else:
                     all_keys = [k for k in all_features.keys() if "lora0" in k]
                     for k in all_keys:

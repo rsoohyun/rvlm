@@ -31,7 +31,7 @@ if __name__=="__main__":
     parser.add_argument("--lora_w_pretrain", action="store_true")
     
     parser.add_argument("--epochs", type=int, default=4)
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--wd", type=float, default=5e-5)
@@ -125,14 +125,13 @@ if __name__=="__main__":
             if args.last_only: all_keys = ["23"]
             else: all_keys = list(all_features.keys())
             
-            with torch.no_grad():
-                for i in lora_idxs:
-                    loralib.set_used_lora(model, [i])
-                    model(images.to("cuda"))
-                    img_feats = [all_features[k] for k in all_keys]
-                    img_feats = [model.model.visual.early_exit_proj(feat) for feat in img_feats]
-                    tmp_features[i] = [feat @ desc_feats.t() for feat in img_feats]
-                loralib.set_used_lora(model, lora_idxs)
+            for i in lora_idxs:
+                loralib.set_used_lora(model, [i])
+                model(images.to("cuda"))
+                img_feats = [all_features[k] for k in all_keys]
+                img_feats = [model.model.visual.early_exit_proj(feat) for feat in img_feats]
+                tmp_features[i] = [feat @ desc_feats.t() for feat in img_feats]
+            loralib.set_used_lora(model, lora_idxs)
             ortho_loss = ortho_loss_fn(tmp_features, args.l1)
             
             loss = args.lambda_cls * cls_loss + args.lambda_ortho * ortho_loss

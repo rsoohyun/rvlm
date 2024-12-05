@@ -29,5 +29,5 @@ class OrthoParamLoss(nn.Module):
         for idx1, idx2 in self.pairs:
             params1, params2 = params[idx1], params[idx2]
             for param1, param2 in zip(params1, params2):
-                loss += torch.norm(torch.mm(param1, param2), p=1)
+                loss += torch.norm(torch.mm(param1.T, param2), p=1)
         return loss
