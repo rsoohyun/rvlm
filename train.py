@@ -37,8 +37,10 @@ if __name__=="__main__":
     parser.add_argument("--wd", type=float, default=5e-5)
     
     parser.add_argument("--lambda_cls", type=float, default=1.)
-    parser.add_argument("--lambda_ortho", type=float, default=1.)
+    parser.add_argument("--lambda_feat_ortho", type=float, default=1.)
+    parser.add_argument("--lambda_param_ortho", type=float, default=1.)
     parser.add_argument("--l1", action="store_true")
+    parser.add_argument("--feat_ortho", action="store_true")
     parser.add_argument("--param_ortho", action="store_true")
     
     parser.add_argument("--data_dir", type=str, default="./data")
@@ -126,21 +128,8 @@ if __name__=="__main__":
             outputs = model(images.to("cuda"))
             cls_loss = cls_loss_fn(outputs, attrs[:,0].to("cuda"))
             
-            if args.param_ortho:
-                tmp_params = defaultdict(list)
-                for name, param in model.model.visual.transformer.resblocks.named_parameters():
-                    if "lora0_A" in name:
-                        idx = name.split('.')[0]
-                        end_name = '.'.join(name.split('.')[1:-1])
-                        name_for_eval = f"model.model.visual.transformer.resblocks[{idx}].{end_name}"
-                        
-                        for i in lora_idxs:
-                            wA = eval(name_for_eval.replace('lora0_A', f'lora{i}_A')).weight
-                            wB = eval(name_for_eval.replace('lora0_A', f'lora{i}_B')).weight
-                            w = torch.mm(wB, wA)
-                            tmp_params[i].append(w)
-                ortho_loss = ortho_loss_fn(tmp_params)
-            else:
+            ortho_loss = 0
+            if args.feat_ortho:
                 tmp_features = defaultdict(list)
                 if args.lora_w_pretrain:
                     all_keys = list(all_features.keys())
@@ -154,9 +143,23 @@ if __name__=="__main__":
                     for k in all_keys:
                         for i in lora_idxs:
                             tmp_features[i].append(all_features[k.replace("lora0", f"lora{i}")])
-                ortho_loss = ortho_loss_fn(tmp_features, args.l1)
+                ortho_loss += args.lambda_feat_ortho * ortho_loss_fn(tmp_features, args.l1)
+            if args.param_ortho:
+                tmp_params = defaultdict(list)
+                for name, param in model.model.visual.transformer.resblocks.named_parameters():
+                    if "lora0_A" in name:
+                        idx = name.split('.')[0]
+                        end_name = '.'.join(name.split('.')[1:-1])
+                        name_for_eval = f"model.model.visual.transformer.resblocks[{idx}].{end_name}"
+                        
+                        for i in lora_idxs:
+                            wA = eval(name_for_eval.replace('lora0_A', f'lora{i}_A')).weight
+                            wB = eval(name_for_eval.replace('lora0_A', f'lora{i}_B')).weight
+                            w = torch.mm(wB, wA)
+                            tmp_params[i].append(w)
+                ortho_loss += args.lambda_param_ortho * ortho_loss_fn(tmp_params)
             
-            loss = args.lambda_cls * cls_loss + args.lambda_ortho * ortho_loss
+            loss = args.lambda_cls * cls_loss + ortho_loss
             
             optimizer.zero_grad()
             loss.backward()
@@ -164,7 +167,7 @@ if __name__=="__main__":
 
             train_losses.append(loss.item())
             train_cls_losses.append(cls_loss.item())
-            train_ortho_losses.append(ortho_loss.item())
+            if args.feat_ortho or args.param_ortho: train_ortho_losses.append(ortho_loss.item())
             _, preds = torch.max(outputs, 1)
             train_preds.append(preds)
             train_labels.append(attrs[:,0])
