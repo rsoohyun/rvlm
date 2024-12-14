@@ -1,16 +1,26 @@
 # Robust VLM
 
 ### Train
-- Train MHA only
+- Train all LoRA adapters together
     ```bash
-    python train.py --r 4 --lora_alpha 1 --lora_dropout 0. --epochs_step1 4 --epochs_step2 4 --batch_size 32 --lr 1e-4 --wd 5e-5 --save_dir "./experiments/models/CLIP@SepLoRA"
+    python train.py
     ```
-- Train MHA + MLP (add `--lora_mlp`)
+- Train LoRA step by step
     ```bash
-    python train.py --lora_mlp --r 4 --lora_alpha 1 --lora_dropout 0. --epochs_step1 4 --epochs_step2 4 --batch_size 32 --lr 1e-4 --wd 5e-5 --save_dir "./experiments/models/CLIP@SepLoRA"
+    python train_steps.py
+    ```
+
+- Train LoRA with descriptional similarity
+    ```bash
+    python train_desc.py
+    ```
+
+- Train LoRA with descriptional similarity (multiple GPU)
+    ```bash
+    python train_desc_multi.py
     ```
 
 ### Evaluate
 ```bash
-python eval.py --save_dir "./experiments/models/CLIP@SepLoRA@4"
+python eval.py --save_dir "./experiments/models/CLIP@LoRA@q_v@r4"
 ```

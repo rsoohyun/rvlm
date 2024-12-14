@@ -13,6 +13,7 @@ import wandb
 from data import load_dataset
 from core import clip, loralib, losses, utils
 from eval import evaluate
+from utils import *
 
 
 
@@ -25,7 +26,7 @@ if __name__=="__main__":
     
     parser.add_argument("--r", type=int, default=4)
     parser.add_argument("--num_lora", type=int, default=4)
-    parser.add_argument("--lora_alpha", type=float, default=1.)
+    parser.add_argument("--lora_alpha", type=float, default=4.)
     parser.add_argument("--lora_dropout", type=float, default=0.)
     parser.add_argument("--lora_modules", type=str, default="q,v")
     parser.add_argument("--lora_w_pretrain", action="store_true")
@@ -37,11 +38,13 @@ if __name__=="__main__":
     parser.add_argument("--wd", type=float, default=5e-5)
     
     parser.add_argument("--lambda_cls", type=float, default=1.)
-    parser.add_argument("--lambda_feat_ortho", type=float, default=1.)
-    parser.add_argument("--lambda_param_ortho", type=float, default=1.)
-    parser.add_argument("--l1", action="store_true")
     parser.add_argument("--feat_ortho", action="store_true")
+    parser.add_argument("--lambda_feat_ortho", type=float, default=1.)
+    parser.add_argument("--l1", action="store_true")
     parser.add_argument("--param_ortho", action="store_true")
+    parser.add_argument("--lambda_param_ortho", type=float, default=1.)
+    parser.add_argument("--only_wA", action="store_true")
+    parser.add_argument("--compare_org", action="store_true")
     
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@LoRA")
@@ -51,11 +54,17 @@ if __name__=="__main__":
     
     ## Set ENV
     utils.set_seed(args.seed)
+    
+    lora_idxs = list(range(args.num_lora))
+    lora_pairs = list(combinations(lora_idxs, 2))
+    lora_modules = [m for m in args.lora_modules.split(',') if m in ['q', 'k', 'v', 'out', 'mlp']]
+    
     save_dir = args.save_dir
-    save_dir += f"@{args.lora_modules.replace(',', '_')}"
+    save_dir += f"@{'_'.join(lora_modules)}"
     if args.lora_w_pretrain: save_dir += "@wp"
     save_dir += f"@r{args.r}/"
     os.makedirs(save_dir, exist_ok=True)
+    write_json(f"{save_dir}config.json", vars(args))
     
     if args.resume_id:
         wandb.init(project="rvlm", id=args.resume_id, resume=True)
@@ -71,19 +80,17 @@ if __name__=="__main__":
         raise NotImplementedError(f'{args.arch} is not implemented yet.')
     print('{} w/o LoRA: {:.1f}M'.format(args.arch, sum(param.numel() for param in model.parameters())/1000000.0))
     
-    lora_idxs = list(range(args.num_lora))
-    lora_pairs = list(combinations(lora_idxs, 2))
-    lora_modules = [m for m in args.lora_modules.split(',') if m in ['q', 'k', 'v', 'out', 'mlp']]
     loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules=lora_modules)
     print('{} w/  LoRA: {:.1f}M'.format(args.arch, sum(param.numel() for param in model.parameters())/1000000.0))
     
     train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
-    # valid_dataset = load_dataset(args.data_dir, args.dataset, "valid", model.preprocess)
-    # valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
     
     cls_loss_fn = nn.CrossEntropyLoss()
-    ortho_loss_fn = losses.OrthoParamLoss(lora_pairs) if args.param_ortho else losses.OrthoFeatLoss(lora_pairs)
+    ortho_feat_loss_fn = losses.OrthoFeatLoss(lora_pairs)
+    ortho_param_loss_fn = losses.OrthoParamLoss(lora_pairs, args.compare_org)
+    if args.only_wA and args.compare_org:
+        raise NotImplementedError('We cannot compare wA with the original weight.')
     
     ## Train
     wandb.define_metric("step/iter")
@@ -92,7 +99,7 @@ if __name__=="__main__":
     _, trainable_params = loralib.get_lora_params(model, fc=True, idxs=lora_idxs)
     optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
     
-    if not args.param_ortho:
+    if args.feat_ortho:
         all_features = {}
         def get_output(name):
             def hook(model, input, output):
@@ -143,9 +150,10 @@ if __name__=="__main__":
                     for k in all_keys:
                         for i in lora_idxs:
                             tmp_features[i].append(all_features[k.replace("lora0", f"lora{i}")])
-                ortho_loss += args.lambda_feat_ortho * ortho_loss_fn(tmp_features, args.l1)
+                ortho_loss += args.lambda_feat_ortho * ortho_feat_loss_fn(tmp_features, args.l1)
             if args.param_ortho:
                 tmp_params = defaultdict(list)
+                org_params = []
                 for name, param in model.model.visual.transformer.resblocks.named_parameters():
                     if "lora0_A" in name:
                         idx = name.split('.')[0]
@@ -155,9 +163,11 @@ if __name__=="__main__":
                         for i in lora_idxs:
                             wA = eval(name_for_eval.replace('lora0_A', f'lora{i}_A')).weight
                             wB = eval(name_for_eval.replace('lora0_A', f'lora{i}_B')).weight
-                            w = torch.mm(wB, wA)
-                            tmp_params[i].append(w)
-                ortho_loss += args.lambda_param_ortho * ortho_loss_fn(tmp_params)
+                            if args.only_wA: tmp_params[i].append(wA)
+                            else: tmp_params[i].append(torch.mm(wB, wA))
+                        org_w = eval(name_for_eval.replace('lora0_A', 'org_linear')).weight
+                        org_params.append(org_w)
+                ortho_loss += args.lambda_param_ortho * ortho_param_loss_fn(tmp_params, org_params)
             
             loss = args.lambda_cls * cls_loss + ortho_loss
             
@@ -167,7 +177,7 @@ if __name__=="__main__":
 
             train_losses.append(loss.item())
             train_cls_losses.append(cls_loss.item())
-            if args.feat_ortho or args.param_ortho: train_ortho_losses.append(ortho_loss.item())
+            train_ortho_losses.append(ortho_loss.item())
             _, preds = torch.max(outputs, 1)
             train_preds.append(preds)
             train_labels.append(attrs[:,0])

@@ -20,14 +20,19 @@ class OrthoFeatLoss(nn.Module):
         return torch.stack(loss, dim=0).mean()
     
 class OrthoParamLoss(nn.Module):
-    def __init__(self, pairs):
+    def __init__(self, pairs, compare_org=False):
         super().__init__()
         self.pairs = pairs
+        self.compare_org = compare_org
     
-    def forward(self, params):
+    def forward(self, params, org_params=None):
         loss = 0
         for idx1, idx2 in self.pairs:
             params1, params2 = params[idx1], params[idx2]
             for param1, param2 in zip(params1, params2):
-                loss += torch.norm(torch.mm(param1.T, param2), p=1)
+                loss += torch.abs(torch.mm(param1, param2.T)).sum()
+        if self.compare_org:
+            for lora_params in params.values():
+                for lora_param, org_param in zip(lora_params, org_params):
+                    loss += torch.abs(torch.mm(org_param, lora_param.T)).sum()
         return loss

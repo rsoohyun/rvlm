@@ -11,7 +11,7 @@ from .utils import generate_desc
 
 
 class WaterBirdsDataset(Dataset): 
-    def __init__(self, root, split="train", transform=None):
+    def __init__(self, root, split="train", transform=None, prompt_id=0):
         try:
             split_i = ["train", "valid", "test"].index(split)
         except ValueError:
@@ -38,12 +38,12 @@ class WaterBirdsDataset(Dataset):
                 torch.arange(self.n_places).unsqueeze(1) == torch.from_numpy(self.p_array)).sum(1).float()
         self.filename_array = self.metadata_df['img_filename'].values
         
-        if os.path.exists(f"{root}/descs.json"):
-            with open(f"{root}/descs.json", 'r') as f:
+        if os.path.exists(f"{root}/descs{prompt_id}.json"):
+            with open(f"{root}/descs{prompt_id}.json", 'r') as f:
                 self.class_descs = json.load(f)
         else:
-            self.class_descs = generate_desc(self.class_labels)
-            with open(f"{root}/descs.json", 'w') as f:
+            self.class_descs = generate_desc(self.class_labels, prompt_id=prompt_id)
+            with open(f"{root}/descs{prompt_id}.json", 'w') as f:
                 json.dump(self.class_descs, f, indent='\t')
         self.all_descs = list(set(itertools.chain(*list(self.class_descs.values()))))
 

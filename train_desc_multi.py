@@ -11,7 +11,7 @@ from collections import defaultdict
 import wandb
 
 from data import load_dataset
-from core import clip, loralib, losses, utils
+from core import clip_multi, loralib, losses, utils
 from eval import evaluate
 from utils import *
 
@@ -27,7 +27,7 @@ if __name__=="__main__":
     
     parser.add_argument("--r", type=int, default=4)
     parser.add_argument("--num_lora", type=int, default=4)
-    parser.add_argument("--lora_alpha", type=float, default=4.)
+    parser.add_argument("--lora_alpha", type=float, default=1.)
     parser.add_argument("--lora_dropout", type=float, default=0.)
     parser.add_argument("--lora_modules", type=str, default="q,v")
     parser.add_argument("--lora_w_pretrain", action="store_true")
@@ -44,7 +44,7 @@ if __name__=="__main__":
     parser.add_argument("--last_only", action="store_true")
     
     parser.add_argument("--data_dir", type=str, default="./data")
-    parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@LoRA_desc")
+    parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@LoRA_desc_multi")
     
     parser.add_argument("--resume_id", type=str, default="")
     args = parser.parse_args()
@@ -72,7 +72,7 @@ if __name__=="__main__":
     
     ## Load data and model
     if args.arch == "CLIP":
-        model = clip.CLIP_FT("ViT-L/14", "cuda", n_cls=args.n_cls)
+        model = clip_multi.CLIP_FT("ViT-L/14", "cuda", n_cls=args.n_cls)
     else:
         raise NotImplementedError(f'{args.arch} is not implemented yet.')
     print('{} w/o LoRA: {:.1f}M'.format(args.arch, sum(param.numel() for param in model.parameters())/1000000.0))
@@ -93,26 +93,16 @@ if __name__=="__main__":
     _, trainable_params = loralib.get_lora_params(model, fc=True, idxs=lora_idxs)
     optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
     
-    desc_feats = model.model.encode_text(clip.tokenize(train_dataset.all_descs).to("cuda"))
+    desc_feats = model.model.encode_text(clip_multi.tokenize(train_dataset.all_descs).to("cuda"))
     desc_feats = desc_feats / desc_feats.norm(dim=1, keepdim=True)
-    
-    all_features = {}
-    def get_output(name):
-        def hook(model, input, output):
-            all_features[name] = output
-        return hook
-    
-    for name, submodule in model.model.visual.transformer.resblocks.named_modules():
-        idx = name.split('.')[0]
-        if isinstance(submodule, clip.model.ResidualAttentionBlock):
-            eval(f"model.model.visual.transformer.resblocks[{idx}]").register_forward_hook(get_output(name))
 
+    model = nn.DataParallel(model).cuda()
     iteration = 0
     train_losses, train_cls_losses, train_ortho_losses = [], [], []
     train_preds, train_labels, train_spurious = [], [], []
     for epoch in range(1, args.epochs+1):
         if os.path.exists(save_dir + f'epoch{epoch}.pt'):
-            loralib.load_lora(model, save_dir + f'epoch{epoch}.pt')
+            loralib.load_lora(model.module, save_dir + f'epoch{epoch}.pt')
             optimizer.load_state_dict(torch.load(save_dir + f'epoch{epoch}_op.pt'))
             iteration = epoch * len(train_loader)
             continue
@@ -124,17 +114,14 @@ if __name__=="__main__":
             cls_loss = cls_loss_fn(outputs, attrs[:,0].to("cuda"))
             
             tmp_features = defaultdict(list)
-            if args.last_only: all_keys = ["23"]
-            else: all_keys = list(all_features.keys())
             
             for i in lora_idxs:
-                loralib.set_used_lora(model, [i])
-                model(images.to("cuda"))
-                img_feats = [all_features[k] for k in all_keys]
-                img_feats = [model.model.visual.early_exit_proj(feat) for feat in img_feats]
+                loralib.set_used_lora(model.module, [i])
+                _, img_feats = model(images.to("cuda"), True)
+                if args.last_only: img_feats = img_feats[-1:]
                 img_feats = [feat / feat.norm(dim=-1, keepdim=True) for feat in img_feats]
                 tmp_features[i] = [feat @ desc_feats.t() for feat in img_feats]
-            loralib.set_used_lora(model, lora_idxs)
+            loralib.set_used_lora(model.module, lora_idxs)
             ortho_loss = ortho_loss_fn(tmp_features, args.l1)
             
             loss = args.lambda_cls * cls_loss + args.lambda_ortho * ortho_loss
@@ -175,7 +162,7 @@ if __name__=="__main__":
                 train_losses, train_cls_losses, train_ortho_losses = [], [], []
                 train_preds, train_labels, train_spurious = [], [], []
 
-        loralib.save_lora(model, save_dir + f'epoch{epoch}.pt', idxs=lora_idxs)
+        loralib.save_lora(model.module, save_dir + f'epoch{epoch}.pt', idxs=lora_idxs)
         torch.save(optimizer.state_dict(), save_dir + f'epoch{epoch}_op.pt')
     
     wandb.finish()

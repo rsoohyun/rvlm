@@ -166,3 +166,4 @@ experiments*/
 wandb/
 demo.py
 _deprecated/
+eval_log.txt
