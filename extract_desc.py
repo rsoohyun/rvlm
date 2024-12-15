@@ -1,3 +1,5 @@
+import os
+from collections import defaultdict
 import argparse
 from tqdm import tqdm
 import numpy as np
@@ -15,10 +17,11 @@ def infer(model, data_loader, desc=''):
     all_spurious = []
     for data in tqdm(data_loader, desc=desc):
         images, attrs, _ = data
+        images = images.to(model.device)
         labels = attrs[:,0]
         spurious = attrs[:,1]
         
-        outputs = model(images.to("cuda")).detach().cpu()
+        outputs = model(images).detach().cpu()
         _, preds = torch.max(outputs, 1)
         
         all_preds.append(preds)
@@ -71,19 +74,16 @@ if __name__=="__main__":
     parser.add_argument("--lora_alpha", type=float, default=4.)
     parser.add_argument("--lora_dropout", type=float, default=0.)
     parser.add_argument("--lora_modules", type=str, default="q,v")
+    parser.add_argument("--last_only", action="store_true")
     
     parser.add_argument("--epochs", type=int, default=4)
-    parser.add_argument("--epochs_per_step", type=str, default="4,4")
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=16)
     
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@SepLoRA@r4")
-    
-    parser.add_argument("--eval_org", action="store_true")
+    parser.add_argument("--sim_dir", type=str, default="./experiments/desc_sim")
     args = parser.parse_args()
-    
-    f = open('./eval_log.txt', 'a')
     
     utils.set_seed(args.seed)
     
@@ -96,56 +96,62 @@ if __name__=="__main__":
     if set(list(lm.split('_'))) != set(lora_modules):
         raise NotImplementedError('Please match configuration "lora_modules".')
     
+    sim_dir = f"{args.sim_dir}/{args.save_dir.split('/')[-1]}"
+    
     ## Load data and model
     if args.arch == "CLIP":
         model = clip.CLIP_FT("ViT-L/14", "cuda", n_cls=args.n_cls)
         model.eval()
     else:
         raise NotImplementedError(f'{args.arch} is not implemented yet.')
+    loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules=lora_modules)
+    loralib.load_lora(model, args.save_dir + f'/epoch{args.epochs}.pt')
+    loralib.set_used_lora(model, lora_idxs)
+    model.eval()
     
+    ## Load data and model
     test_dataset = load_dataset(args.data_dir, args.dataset, "test", model.preprocess, args.prompt_id)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers)
     
-    f.write(f"Evaluation on \"{args.save_dir}\"\n")
+    desc_feats = model.model.encode_text(clip.tokenize(test_dataset.all_descs).to("cuda"))
+    desc_feats = desc_feats / desc_feats.norm(dim=1, keepdim=True)
     
-    ## Evaluation
-    if args.eval_org:
-        worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc="Eval CLIP"))
-        accs_by_group_str = f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]"
-        f.write("== CLIP ==\n")
-        f.write(f"Average accuracy: {avg_acc:.2f}\n")
-        f.write(f"Worst Group accuracy: {worst_acc:.2f}\n")
-        f.write(f"Acc by group: {accs_by_group_str}\n")
+    all_features = {}
+    def get_output(name):
+        def hook(model, input, output):
+            all_features[name] = output
+        return hook
     
-    if '@LoRA' in args.save_dir:
-        loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules=lora_modules)
-        loralib.load_lora(model, args.save_dir + f'/epoch{args.epochs}.pt')
+    for name, submodule in model.model.visual.transformer.resblocks.named_modules():
+        idx = name.split('.')[0]
+        if isinstance(submodule, clip.model.ResidualAttentionBlock):
+            eval(f"model.model.visual.transformer.resblocks[{idx}]").register_forward_hook(get_output(name))
+    
+    for i, data in enumerate(tqdm(test_loader, desc="extracting desc sim")):
+        images, attrs, _ = data
+        labels = attrs[:,0]
+        spurious = attrs[:,1]
+        
+        outputs = model(images.to("cuda")).detach().cpu()
+        _, preds = torch.max(outputs, 1)
+        
+        tmp_features = defaultdict(list)
+        if args.last_only: all_keys = ["23"]
+        else: all_keys = list(all_features.keys())
+        
+        for i in lora_idxs:
+            loralib.set_used_lora(model, [i])
+            model(images.to("cuda"))
+            img_feats = [all_features[k] for k in all_keys]
+            img_feats = [model.model.visual.early_exit_proj(feat) for feat in img_feats]
+            img_feats = [feat / feat.norm(dim=-1, keepdim=True) for feat in img_feats]
+            tmp_features[i] = [(feat @ desc_feats.t()).detach().cpu() for feat in img_feats]
         loralib.set_used_lora(model, lora_idxs)
         
-        worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc="Eval CLIP+LoRA"))
-        accs_by_group_str = f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]"
-        f.write("== CLIP+LoRA ==\n")
-        f.write(f"Average accuracy: {avg_acc:.2f}\n")
-        f.write(f"Worst Group accuracy: {worst_acc:.2f}\n")
-        f.write(f"Acc by group: {accs_by_group_str}\n")
-    
-    elif '@SepLoRA' in args.save_dir:
-        loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules=lora_modules)
-        
-        train_epochs = [int(m) for m in args.epochs_per_step.split(',')]
-        if len(train_epochs) != args.num_lora:
-            raise NotImplementedError('Wrong number of training steps.')
-        
-        for i in range(args.num_lora):
-            loralib.load_lora(model, args.save_dir + f'/step{i+1}_epoch{train_epochs[i]}.pt')
-            loralib.set_used_lora(model, [i])
-            
-            worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc=f"Eval CLIP+LoRA{i+1}"))
-            accs_by_group_str = f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]"
-            f.write(f"== Step{i+1}) CLIP+LoRA{i+1} ==\n")
-            f.write(f"Average accuracy: {avg_acc:.2f}\n")
-            f.write(f"Worst Group accuracy: {worst_acc:.2f}\n")
-            f.write(f"Acc by group: {accs_by_group_str}\n")
-        
-    f.write('\n')
-    f.close()
+        result = {
+            "features": tmp_features,
+            "preds": preds,
+            "labels": labels,
+            "spurious": spurious,
+        }
+        torch.save(result, f"{sim_dir}/{i}.pt")
