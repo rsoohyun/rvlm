@@ -3,9 +3,11 @@ from torch import nn
 from torch.nn import functional as F
 
 class OrthoFeatLoss(nn.Module):
-    def __init__(self, pairs):
+    def __init__(self, pairs, kl=False):
         super().__init__()
-        self.loss_fn = F.cosine_similarity
+        if kl: self.loss_fn = F.kl_div
+        else: self.loss_fn = F.cosine_similarity
+        self.kl = kl
         self.pairs = pairs
     
     def forward(self, features, l1=False):
@@ -13,7 +15,9 @@ class OrthoFeatLoss(nn.Module):
         for idx1, idx2 in self.pairs:
             features1, features2 = features[idx1], features[idx2]
             for feature1, feature2 in zip(features1, features2):
-                if l1:
+                if self.kl:
+                    loss.append(self.loss_fn(feature1, feature2, reduction="batchmean"))
+                elif l1:
                     loss.append(self.loss_fn(feature1, feature2, dim=-1).abs().mean())
                 else:
                     loss.append(self.loss_fn(feature1, feature2, dim=-1).square().mean())

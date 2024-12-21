@@ -58,9 +58,6 @@ if __name__=="__main__":
         if set(list(lm.split('_'))) != set(lora_modules):
             raise NotImplementedError('Please match configuration "lora_modules".')
         
-        sim_dir = f"{args.sim_dir}/{args.save_dir.split('/')[-1]}"
-        os.makedirs(sim_dir, exist_ok=True)
-        
         ## Load data and model
         if args.arch == "CLIP":
             model = clip.CLIP_FT("ViT-L/14", device, n_cls=args.n_cls)
@@ -77,6 +74,8 @@ if __name__=="__main__":
         desc_feats = desc_feats / desc_feats.norm(dim=1, keepdim=True)
         
         def extract_desc(model, sim_dir):
+            os.makedirs(sim_dir, exist_ok=True)
+            
             all_features = {}
             def get_output(name):
                 def hook(model, input, output):
@@ -124,7 +123,7 @@ if __name__=="__main__":
         loralib.load_lora(model, args.save_dir + f'/epoch{args.epochs}.pt', device=torch.device(device))
         loralib.set_used_lora(model, lora_idxs)
         model.eval()
-        extract_desc(model, sim_dir)
+        extract_desc(model, f"{args.sim_dir}/{args.save_dir.split('/')[-1]}")
 
 
     if args.vis:
@@ -132,7 +131,7 @@ if __name__=="__main__":
         save_dir = sim_dir.replace('desc_sim/', 'desc_sim_vis/')
         os.makedirs(save_dir, exist_ok=True)
         
-        prompt_id = int(args.sim_dir.split('_p')[-1].split('@')[0])
+        prompt_id = int(sim_dir.split('_p')[-1][0])
         classes = ['landbird', 'waterbird']
         class_descs = read_json(f"{args.data_dir}/{args.dataset}/descs{prompt_id}.json")
         all_descs = list(set(itertools.chain(*list(class_descs.values()))))
@@ -150,7 +149,7 @@ if __name__=="__main__":
         color_list = [color_dict[set_list[i]] for i in idxs]
         all_descs = [all_descs[i] for i in idxs]
         
-        result_paths = glob.glob(f"{args.sim_dir}/*.pt")
+        result_paths = glob.glob(f"{sim_dir}/*.pt")
         for path in tqdm(result_paths):
             idx = path.split('/')[-1][:-3]
             data = torch.load(path)

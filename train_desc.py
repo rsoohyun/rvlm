@@ -31,6 +31,7 @@ if __name__=="__main__":
     parser.add_argument("--lora_dropout", type=float, default=0.)
     parser.add_argument("--lora_modules", type=str, default="q,v")
     parser.add_argument("--lora_w_pretrain", action="store_true")
+    parser.add_argument("--kl", action="store_true")
     
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--batch_size", type=int, default=8)
@@ -84,7 +85,7 @@ if __name__=="__main__":
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
     
     cls_loss_fn = nn.CrossEntropyLoss()
-    ortho_loss_fn = losses.OrthoFeatLoss(lora_pairs)
+    ortho_loss_fn = losses.OrthoFeatLoss(lora_pairs, kl=args.kl)
     
     ## Train
     wandb.define_metric("step/iter")
@@ -93,7 +94,8 @@ if __name__=="__main__":
     _, trainable_params = loralib.get_lora_params(model, fc=True, idxs=lora_idxs)
     optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
     
-    desc_feats = model.model.encode_text(clip.tokenize(train_dataset.all_descs).to("cuda"))
+    all_descs = [f"A photo of a bird with {desc.lower()}" for desc in train_dataset.all_descs]
+    desc_feats = model.model.encode_text(clip.tokenize(all_descs).to("cuda"))
     desc_feats = desc_feats / desc_feats.norm(dim=1, keepdim=True)
     
     all_features = {}
@@ -121,6 +123,8 @@ if __name__=="__main__":
             images, attrs, _ = data
             
             outputs = model(images.to("cuda"))
+            import pdb; pdb.set_trace()
+            
             cls_loss = cls_loss_fn(outputs, attrs[:,0].to("cuda"))
             
             tmp_features = defaultdict(list)
