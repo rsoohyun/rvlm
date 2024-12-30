@@ -20,7 +20,7 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--arch", type=str, default="CLIP")
-    parser.add_argument("--dataset", type=str, default="waterbird")
+    parser.add_argument("--dataset", type=str, default="waterbird", choices=['waterbird', 'celeba'])
     parser.add_argument("--n_cls", type=int, default=2)
     parser.add_argument("--prompt_id", type=int, default=0)
     
@@ -29,8 +29,7 @@ if __name__=="__main__":
     parser.add_argument("--lora_alpha", type=float, default=4.)
     parser.add_argument("--lora_dropout", type=float, default=0.)
     parser.add_argument("--lora_modules", type=str, default="q,v")
-    parser.add_argument("--last_only", action="store_true")
-    parser.add_argument("--last_2", action="store_true")
+    parser.add_argument("--last_num", type=int, default=24)
     
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--batch_size", type=int, default=8)
@@ -38,7 +37,7 @@ if __name__=="__main__":
     parser.add_argument("--train", action="store_true")
     
     parser.add_argument("--data_dir", type=str, default="./data")
-    parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@SepLoRA@r4")
+    parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@SepLoRA@q_v@r4")
     parser.add_argument("--sim_dir", type=str, default="./experiments/desc_sim")
     
     parser.add_argument("--infer", action="store_true")
@@ -76,19 +75,13 @@ if __name__=="__main__":
         all_descs = [f"A photo of a bird with {desc.lower()}" for desc in test_dataset.all_descs]
         desc_feats = model.model.encode_text(clip.tokenize(all_descs).to("cuda"))
         desc_feats = desc_feats / desc_feats.norm(dim=1, keepdim=True)
+        desc_feats = desc_feats.detach()
+        
+        target_layers = [str(i) for i in range(24-args.last_num, 24)]
+        model.set_hooker(target_layers, args.num_lora, desc_feats)
         
         def extract_desc(model, sim_dir):
             os.makedirs(sim_dir, exist_ok=True)
-            
-            all_features = {}
-            def get_output(name):
-                def hook(model, input, output):
-                    all_features[name] = output
-                return hook
-            
-            for name, submodule in model.model.visual.transformer.resblocks.named_modules():
-                if isinstance(submodule, clip.model.ResidualAttentionBlock):
-                    eval(f"model.model.visual.transformer.resblocks[{name}]").register_forward_hook(get_output(name))
             
             for idx, data in enumerate(tqdm(test_loader, desc="extracting desc sim")):
                 images, attrs, _ = data
@@ -96,32 +89,20 @@ if __name__=="__main__":
                 labels = attrs[:,0]
                 spurious = attrs[:,1]
                 
+                model.hooker.clear()
                 outputs = model(images).detach().cpu()
                 _, preds = torch.max(outputs, 1)
                 
-                tmp_features = defaultdict(list)
-                if args.last_only: all_keys = [23]
-                elif args.last_2: all_keys = [22, 23]
-                else: all_keys = list(range(24))
-                
-                for key in all_keys:
-                    for i in lora_idxs:
-                        loralib.set_used_lora_target(model, lora_idxs, [i], key)
-                        model(images)
-                        img_feat = all_features[str(key)]
-                        img_feat = model.model.visual.early_exit_proj(img_feat)
-                        img_feat = img_feat / img_feat.norm(dim=-1, keepdim=True)
-                        tmp_features[i].append((img_feat @ desc_feats.t()).detach().cpu())
-                loralib.set_used_lora(model, lora_idxs)
+                import pdb; pdb.set_trace()
                 
                 result = {
-                    "features": tmp_features,
+                    "features": model.hooker.desc_sim,
                     "preds": preds,
                     "labels": labels,
                     "spurious": spurious,
                 }
                 torch.save(result, f"{sim_dir}/{idx}.pt")
-                if idx==100: break
+                if idx==20: break
         
         if args.org:
             extract_desc(model, f"{args.sim_dir}/CLIP")
@@ -171,7 +152,7 @@ if __name__=="__main__":
             n = len(features[0])
             feat_labels = list(range(24-n,24))
             
-            for feat_idx in range(len(features[0])):
+            for feat_idx in range(n):
                 sims = [features[i][feat_idx][:, idxs] for i in range(args.num_lora)]  # [bsz, num_desc]
                 label = feat_labels[feat_idx]
                 

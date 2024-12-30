@@ -20,7 +20,7 @@ class CLIP_FT(nn.Module):
         
         self.device = device
         
-    def set_hooker(self, target_layers, num_lora, desc_emb, loss_fn, l1=False):
+    def set_hooker(self, target_layers, num_lora, desc_emb, loss_fn=None, l1=False):
         self.hooker = Hooker(self, num_lora, desc_emb, loss_fn, l1)
         
         for name, submodule in self.model.visual.transformer.resblocks.named_modules():

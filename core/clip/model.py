@@ -185,6 +185,7 @@ class ResidualAttentionBlock(nn.Module):
         self.attn_mask = attn_mask
         
         self.hooker = None
+        self.hooker_save = None
 
     def attention(self, x: torch.Tensor):
         self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
@@ -194,7 +195,7 @@ class ResidualAttentionBlock(nn.Module):
         attn_lora = isinstance(self.attn, LoRAInjectedMultiheadAttention)
         mlp_lora = isinstance(self.mlp.c_fc, LoRAInjectedLinear)
         
-        if self.hooker is not None and (attn_lora or mlp_lora):
+        if attn_lora or mlp_lora:
             att_output = self.attention(self.ln_1(x))
             if not attn_lora: att_output = {k:att_output for k in ['org'] + list(range(self.hooker.num_lora))}
             x = {k: x + v for k,v in att_output.items()}
@@ -209,22 +210,12 @@ class ResidualAttentionBlock(nn.Module):
                     tmp_x = self.mlp.gelu(tmp_x)
                     tmp_x = self.mlp.c_proj(tmp_x)[k]
                     new_x[k] = v + tmp_x
-            self.hooker.compute_loss(new_x)
+            if self.hooker is not None: self.hooker.compute(new_x)
             return new_x['org']
         else:
-            if attn_lora:
-                x = x + self.attention(self.ln_1(x))['org']
-            else:
-                x = x + self.attention(self.ln_1(x))
-            
-            if mlp_lora:
-                tmp_x = self.ln_2(x)
-                tmp_x = self.mlp.c_fc(tmp_x)['org']
-                tmp_x = self.mlp.gelu(tmp_x)
-                tmp_x = self.mlp.c_proj(tmp_x)['org']
-                x = x + tmp_x
-            else:
-                x = x + self.mlp(self.ln_2(x))
+            x = x + self.attention(self.ln_1(x))
+            x = x + self.mlp(self.ln_2(x))
+            if self.hooker is not None: self.hooker.compute({'org': x})
             return x
 
 
