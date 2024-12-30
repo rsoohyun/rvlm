@@ -343,6 +343,7 @@ class LoRAInjectedLinear(nn.Module):
             self.add_module(f'lora{i}_B', nn.Linear(self.r, self.out_features, bias=False))
         self.init_lora_params()
         self.used_lora = list(range(self.num_lora))
+        self.lora_only = False
         self.scaling = self.lora_alpha / self.r
         
     def init_lora_params(self):
@@ -353,7 +354,7 @@ class LoRAInjectedLinear(nn.Module):
             nn.init.zeros_(eval(f'self.lora{i}_B.weight'))
 
     def forward(self, x: torch.Tensor):
-        result = self.org_linear(x)
+        result = self.org_linear(x) if not self.lora_only else 0
         for i in range(self.num_lora):
             tmp = eval(f'self.lora{i}_A')(x)
             tmp = eval(f'self.lora{i}_B')(tmp)

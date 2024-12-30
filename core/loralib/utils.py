@@ -139,3 +139,20 @@ def set_used_lora(model, idxs, visual_only=True):
             param = '.'.join(name.split('.')[1:])
             if isinstance(submodule, LoRAInjectedLinear): 
                 eval(f"{target_block_name}[{idx}].{param}").used_lora = idxs
+                eval(f"{target_block_name}[{idx}].{param}").lora_only = False
+
+def set_used_lora_target(model, all_idxs, target_idxs, target_layer, visual_only=True):
+    target_blocks = [model.model.visual.transformer.resblocks] if visual_only else [model.model.visual.transformer.resblocks, model.model.transformer.resblocks]
+    target_block_names = ["model.model.visual.transformer.resblocks"] if visual_only else ["model.model.visual.transformer.resblocks", "model.model.transformer.resblocks"]
+    
+    for target_block, target_block_name in zip(target_blocks, target_block_names):
+        for name, submodule in target_block.named_modules():
+            idx = name.split('.')[0]
+            param = '.'.join(name.split('.')[1:])
+            if isinstance(submodule, LoRAInjectedLinear):
+                if idx != target_layer:
+                    eval(f"{target_block_name}[{idx}].{param}").used_lora = all_idxs
+                    eval(f"{target_block_name}[{idx}].{param}").lora_only = False
+                else:
+                    eval(f"{target_block_name}[{idx}].{param}").used_lora = target_idxs
+                    eval(f"{target_block_name}[{idx}].{param}").lora_only = True

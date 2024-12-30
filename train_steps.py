@@ -12,7 +12,7 @@ import wandb
 
 from data import load_dataset
 from core import clip, loralib, losses, utils
-from eval import evaluate
+from eval import evaluate, infer
 from utils import *
 
 
@@ -30,6 +30,9 @@ if __name__=="__main__":
     parser.add_argument("--lora_dropout", type=float, default=0.)
     parser.add_argument("--lora_modules", type=str, default="q,v")
     parser.add_argument("--lora_w_pretrain", action="store_true")
+    parser.add_argument("--kl", action="store_true")
+    parser.add_argument("--dot", action="store_true")
+    parser.add_argument("--entropy", action="store_true")
     
     parser.add_argument("--epochs_per_step", type=str, default="4,4")
     parser.add_argument("--batch_size", type=int, default=32)
@@ -55,6 +58,8 @@ if __name__=="__main__":
     ## Set ENV
     utils.set_seed(args.seed)
     
+    lora_idxs = list(range(args.num_lora))
+    lora_pairs = list(combinations(lora_idxs, 2))
     lora_modules = [m for m in args.lora_modules.split(',') if m in ['q', 'k', 'v', 'out', 'mlp']]
     
     save_dir = args.save_dir
@@ -84,6 +89,9 @@ if __name__=="__main__":
     train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
     
+    test_dataset = load_dataset(args.data_dir, args.dataset, "test", model.preprocess, args.prompt_id)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers)
+
     cls_loss_fn = nn.CrossEntropyLoss()
     if args.only_wA and args.compare_org:
         raise NotImplementedError('We cannot compare wA with the original weight.')
@@ -116,7 +124,7 @@ if __name__=="__main__":
     for i in range(args.num_lora):
         lora_idxs = list(range(i+1))
         lora_pairs = [(i, j) for j in range(i)]
-        ortho_feat_loss_fn = losses.OrthoFeatLoss(lora_pairs)
+        ortho_feat_loss_fn = losses.OrthoFeatLoss(lora_pairs, args)
         ortho_param_loss_fn = losses.OrthoParamLoss(lora_pairs, args.compare_org)
         
         wandb.define_metric(f"step{i+1}/iter")
@@ -128,6 +136,7 @@ if __name__=="__main__":
         iteration = 0
         train_losses, train_cls_losses, train_ortho_losses = [], [], []
         train_preds, train_labels, train_spurious = [], [], []
+        
         for epoch in range(1, train_epochs[i]+1):
             if os.path.exists(save_dir + f'step{i+1}_epoch{epoch}.pt'):
                 loralib.load_lora(model, save_dir + f'step{i+1}_epoch{epoch}.pt')
@@ -137,8 +146,9 @@ if __name__=="__main__":
             
             for data in tqdm(train_loader, f'Step{i+1} Epoch: {epoch:03d}'):
                 images, attrs, _ = data
+                images = images.to("cuda")
                 
-                outputs = model(images.to("cuda"))
+                outputs = model(images)
                 cls_loss = cls_loss_fn(outputs, attrs[:,0].to("cuda"))
                 
                 ortho_loss = 0
@@ -147,16 +157,16 @@ if __name__=="__main__":
                         tmp_features = defaultdict(list)
                         if args.lora_w_pretrain:
                             all_keys = list(all_features.keys())
-                            for i in lora_idxs:
-                                loralib.set_used_lora(model, [i])
-                                model(images.to("cuda"))
-                                tmp_features[i] = [all_features[k] for k in all_keys]
+                            for j in lora_idxs:
+                                loralib.set_used_lora(model, [j])
+                                model(images)
+                                tmp_features[j] = [all_features[k] for k in all_keys]
                             loralib.set_used_lora(model, lora_idxs)
                         else:
                             all_keys = [k for k in all_features.keys() if "lora0" in k]
                             for k in all_keys:
-                                for i in lora_idxs:
-                                    tmp_features[i].append(all_features[k.replace("lora0", f"lora{i}")])
+                                for j in lora_idxs:
+                                    tmp_features[j].append(all_features[k.replace("lora0", f"lora{j}")])
                         ortho_loss += args.lambda_feat_ortho * ortho_feat_loss_fn(tmp_features, args.l1)
                     if args.param_ortho:
                         tmp_params = defaultdict(list)
@@ -167,11 +177,11 @@ if __name__=="__main__":
                                 end_name = '.'.join(name.split('.')[1:-1])
                                 name_for_eval = f"model.model.visual.transformer.resblocks[{idx}].{end_name}"
                                 
-                                for i in lora_idxs:
-                                    wA = eval(name_for_eval.replace('lora0_A', f'lora{i}_A')).weight
-                                    wB = eval(name_for_eval.replace('lora0_A', f'lora{i}_B')).weight
-                                    if args.only_wA: tmp_params[i].append(wA)
-                                    else: tmp_params[i].append(torch.mm(wB, wA))
+                                for j in lora_idxs:
+                                    wA = eval(name_for_eval.replace('lora0_A', f'lora{j}_A')).weight
+                                    wB = eval(name_for_eval.replace('lora0_A', f'lora{j}_B')).weight
+                                    if args.only_wA: tmp_params[j].append(wA)
+                                    else: tmp_params[j].append(torch.mm(wB, wA))
                                 org_w = eval(name_for_eval.replace('lora0_A', 'org_linear')).weight
                                 org_params.append(org_w)
                         ortho_loss += args.lambda_param_ortho * ortho_param_loss_fn(tmp_params, org_params)
@@ -217,4 +227,13 @@ if __name__=="__main__":
             loralib.save_lora(model, save_dir + f'step{i+1}_epoch{epoch}.pt', idxs=[i])
             torch.save(optimizer.state_dict(), save_dir + f'step{i+1}_epoch{epoch}_op.pt')
     
+            # Evaluation on test set
+            print("\nEvaluating on Test Set...")
+            model.eval()
+            with torch.no_grad():
+                worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc=f"Eval CLIP+LoRA{i}"))
+            print(f"Test Set - Average Accuracy: {avg_acc:.2f}, Worst Group Accuracy: {worst_acc:.2f}")
+            print(f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]")
+            model.train()
+            
     wandb.finish()

@@ -30,10 +30,12 @@ if __name__=="__main__":
     parser.add_argument("--lora_dropout", type=float, default=0.)
     parser.add_argument("--lora_modules", type=str, default="q,v")
     parser.add_argument("--last_only", action="store_true")
+    parser.add_argument("--last_2", action="store_true")
     
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=16)
+    parser.add_argument("--train", action="store_true")
     
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@SepLoRA@r4")
@@ -67,10 +69,12 @@ if __name__=="__main__":
         model.eval()
         
         ## Load data and model
-        test_dataset = load_dataset(args.data_dir, args.dataset, "test", model.preprocess, args.prompt_id)
+        split = "train" if args.train else "test"
+        test_dataset = load_dataset(args.data_dir, args.dataset, split, model.preprocess, args.prompt_id)
         test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers)
         
-        desc_feats = model.model.encode_text(clip.tokenize(test_dataset.all_descs).to(device))
+        all_descs = [f"A photo of a bird with {desc.lower()}" for desc in test_dataset.all_descs]
+        desc_feats = model.model.encode_text(clip.tokenize(all_descs).to("cuda"))
         desc_feats = desc_feats / desc_feats.norm(dim=1, keepdim=True)
         
         def extract_desc(model, sim_dir):
@@ -83,29 +87,31 @@ if __name__=="__main__":
                 return hook
             
             for name, submodule in model.model.visual.transformer.resblocks.named_modules():
-                idx = name.split('.')[0]
                 if isinstance(submodule, clip.model.ResidualAttentionBlock):
-                    eval(f"model.model.visual.transformer.resblocks[{idx}]").register_forward_hook(get_output(name))
+                    eval(f"model.model.visual.transformer.resblocks[{name}]").register_forward_hook(get_output(name))
             
             for idx, data in enumerate(tqdm(test_loader, desc="extracting desc sim")):
                 images, attrs, _ = data
+                images = images.to("cuda")
                 labels = attrs[:,0]
                 spurious = attrs[:,1]
                 
-                outputs = model(images.to(device)).detach().cpu()
+                outputs = model(images).detach().cpu()
                 _, preds = torch.max(outputs, 1)
                 
                 tmp_features = defaultdict(list)
-                if args.last_only: all_keys = ["23"]
-                else: all_keys = list(all_features.keys())
+                if args.last_only: all_keys = [23]
+                elif args.last_2: all_keys = [22, 23]
+                else: all_keys = list(range(24))
                 
-                for i in lora_idxs:
-                    loralib.set_used_lora(model, [i])
-                    model(images.to(device))
-                    img_feats = [all_features[k] for k in all_keys]
-                    img_feats = [model.model.visual.early_exit_proj(feat) for feat in img_feats]
-                    img_feats = [feat / feat.norm(dim=-1, keepdim=True) for feat in img_feats]
-                    tmp_features[i] = [(feat @ desc_feats.t()).detach().cpu() for feat in img_feats]
+                for key in all_keys:
+                    for i in lora_idxs:
+                        loralib.set_used_lora_target(model, lora_idxs, [i], key)
+                        model(images)
+                        img_feat = all_features[str(key)]
+                        img_feat = model.model.visual.early_exit_proj(img_feat)
+                        img_feat = img_feat / img_feat.norm(dim=-1, keepdim=True)
+                        tmp_features[i].append((img_feat @ desc_feats.t()).detach().cpu())
                 loralib.set_used_lora(model, lora_idxs)
                 
                 result = {
@@ -115,6 +121,7 @@ if __name__=="__main__":
                     "spurious": spurious,
                 }
                 torch.save(result, f"{sim_dir}/{idx}.pt")
+                if idx==100: break
         
         if args.org:
             extract_desc(model, f"{args.sim_dir}/CLIP")
@@ -123,11 +130,12 @@ if __name__=="__main__":
         loralib.load_lora(model, args.save_dir + f'/epoch{args.epochs}.pt', device=torch.device(device))
         loralib.set_used_lora(model, lora_idxs)
         model.eval()
-        extract_desc(model, f"{args.sim_dir}/{args.save_dir.split('/')[-1]}")
+        sim_dir = f"{args.sim_dir}/{args.save_dir.split('/')[-1]}_train" if args.train else f"{args.sim_dir}/{args.save_dir.split('/')[-1]}_test"
+        extract_desc(model, sim_dir)
 
 
     if args.vis:
-        sim_dir = f"{args.sim_dir}/{args.save_dir.split('/')[-1]}"
+        sim_dir = f"{args.sim_dir}/{args.save_dir.split('/')[-1]}_train" if args.train else f"{args.sim_dir}/{args.save_dir.split('/')[-1]}_test"
         save_dir = sim_dir.replace('desc_sim/', 'desc_sim_vis/')
         os.makedirs(save_dir, exist_ok=True)
         
@@ -159,34 +167,40 @@ if __name__=="__main__":
             spurious = data["spurious"]
             
             correct = preds == labels
-            sims = [features[i][-1][:, idxs] for i in range(args.num_lora)]  # [bsz, num_desc]
             
-            for i in range(sims[0].shape[0]):
-                tmp_sims = [sim[i] for sim in sims]
-                y_min = min([sim.min().item() for sim in sims])
-                y_max = max([sim.max().item() for sim in sims])
+            n = len(features[0])
+            feat_labels = list(range(24-n,24))
+            
+            for feat_idx in range(len(features[0])):
+                sims = [features[i][feat_idx][:, idxs] for i in range(args.num_lora)]  # [bsz, num_desc]
+                label = feat_labels[feat_idx]
                 
-                fig, axs = plt.subplots(2, 2)
-                for j, sim in enumerate(tmp_sims):
-                    data = pd.Series(
-                        sim.tolist(),
-                        index=all_descs
-                    )
-                    data.plot( 
-                        kind='bar', 
-                        ax = axs[j//2, j%2],
-                        color=color_list,
-                    )
-                    axs[j//2, j%2].set_title(f"lora {j}")
-                    axs[j//2, j%2].set_ylim(y_min, y_max)
-                    axs[j//2, j%2].tick_params(axis='x', labelsize=2.5)
-                
-                for ax in fig.get_axes():
-                    ax.label_outer()
-                
-                title = f"{'correct' if correct[i] else 'wrong'} | {'landbird' if labels[i]==0 else 'waterbird'} | {'land' if spurious[i]==0 else 'water'}"
-                fig.suptitle(title)
-                plt.subplots(constrained_layout=True)
-                plt.tight_layout()
-                fig.savefig(f"{save_dir}/{title.replace(' | ', '_')}_{idx}_{i}.png", dpi=250)
-                plt.close()
+                for i in range(sims[0].shape[0]):
+                    tmp_sims = [sim[i] for sim in sims]
+                    y_min = min([sim.min().item() for sim in sims])
+                    y_max = max([sim.max().item() for sim in sims])
+                    
+                    fig, axs = plt.subplots(2, 2)
+                    for j, sim in enumerate(tmp_sims):
+                        data = pd.Series(
+                            sim.tolist(),
+                            index=all_descs
+                        )
+                        data.plot( 
+                            kind='bar', 
+                            ax = axs[j//2, j%2],
+                            color=color_list,
+                        )
+                        axs[j//2, j%2].set_title(f"lora {j}")
+                        axs[j//2, j%2].set_ylim(y_min, y_max)
+                        axs[j//2, j%2].tick_params(axis='x', labelsize=2.5)
+                    
+                    for ax in fig.get_axes():
+                        ax.label_outer()
+                    
+                    title = f"{label} | {'correct' if correct[i] else 'wrong'} | {'landbird' if labels[i]==0 else 'waterbird'} | {'land' if spurious[i]==0 else 'water'}"
+                    fig.suptitle(title)
+                    plt.subplots(constrained_layout=True)
+                    plt.tight_layout()
+                    fig.savefig(f"{save_dir}/{title.replace(' | ', '_')}_{idx}_{i}.png", dpi=250)
+                    plt.close()

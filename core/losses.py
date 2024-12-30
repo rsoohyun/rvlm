@@ -2,21 +2,50 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+
+def js_divergence(x, y, tau=0.01, eps=1e-8):
+    p = F.softmax(x / tau, dim=-1)
+    q = F.softmax(y / tau, dim=-1)
+    m = 0.5 * (p + q)
+    return 0.5 * F.kl_div(m.log(), p, reduction='batchmean') \
+         + 0.5 * F.kl_div(m.log(), q, reduction='batchmean')
+
+def compute_entropy(x, tau=0.01, eps=1e-8):
+    p = F.softmax(x / tau, dim=-1)
+    return -(p * p.log()).sum(dim=-1)
+
+def pairwise_dot(x, y, tau=0.01, eps=1e-8):
+    p = F.softmax(x / tau, dim=-1)
+    q = F.softmax(y / tau, dim=-1)
+    return (p * q).sum(dim=-1)
+
+
 class OrthoFeatLoss(nn.Module):
-    def __init__(self, pairs, kl=False):
+    def __init__(self, pairs, args):
         super().__init__()
-        if kl: self.loss_fn = F.kl_div
+        if args.kl: self.loss_fn = F.kl_div
         else: self.loss_fn = F.cosine_similarity
-        self.kl = kl
+        self.kl = args.kl
+        self.entropy = args.entropy
+        self.dot = args.dot
         self.pairs = pairs
-    
+        self.tau = 0.1
+        self.eps = 1e-8
+
     def forward(self, features, l1=False):
         loss = []
         for idx1, idx2 in self.pairs:
             features1, features2 = features[idx1], features[idx2]
             for feature1, feature2 in zip(features1, features2):
-                if self.kl:
-                    loss.append(self.loss_fn(feature1, feature2, reduction="batchmean"))
+                if self.dot:
+                    dot_val = pairwise_dot(feature1, feature2, tau=self.tau).mean()
+                    if self.entropy:
+                        dot_val += compute_entropy(feature1, tau=self.tau).mean() \
+                              + compute_entropy(feature2, tau=self.tau).mean()
+                    loss.append(dot_val)
+                elif self.kl:
+                    loss.append(js_divergence(feature1, feature2, self.tau))
+                    #loss.append((-1) * self.loss_fn(F.log_softmax(feature1/self.tau, dim=-1), F.softmax(feature2/self.tau, dim=-1), reduction="batchmean"))
                 elif l1:
                     loss.append(self.loss_fn(feature1, feature2, dim=-1).abs().mean())
                 else:
