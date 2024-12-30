@@ -21,7 +21,7 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--arch", type=str, default="CLIP")
-    parser.add_argument("--dataset", type=str, default="waterbird")
+    parser.add_argument("--dataset", type=str, default="waterbird", choices=['waterbird', 'celeba'])
     parser.add_argument("--n_cls", type=int, default=2)
     parser.add_argument("--prompt_id", type=int, default=0)
     
@@ -44,8 +44,7 @@ if __name__=="__main__":
     parser.add_argument("--lambda_cls", type=float, default=1.)
     parser.add_argument("--lambda_ortho", type=float, default=1.)
     parser.add_argument("--l1", action="store_true")
-    parser.add_argument("--last_only", action="store_true")
-    parser.add_argument("--last_2", action="store_true")
+    parser.add_argument("--last_num", type=int, default=24)
     
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@LoRA_desc")
@@ -86,7 +85,6 @@ if __name__=="__main__":
     
     train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess, args.prompt_id)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
-    
     test_dataset = load_dataset(args.data_dir, args.dataset, "test", model.preprocess, args.prompt_id)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers)
 
@@ -105,16 +103,9 @@ if __name__=="__main__":
     desc_feats = desc_feats / desc_feats.norm(dim=1, keepdim=True)
     desc_feats = desc_feats.detach()
     
-    all_features = {}
-    def get_output(name):
-        def hook(model, input, output):
-            all_features[name] = output
-        return hook
+    target_layers = [str(i) for i in range(24-args.last_num, 24)]
+    model.set_hooker(target_layers, args.num_lora, desc_feats, ortho_loss_fn, args.l1)
     
-    for name, submodule in model.model.visual.transformer.resblocks.named_modules():
-        if isinstance(submodule, clip.model.ResidualAttentionBlock):
-            eval(f"model.model.visual.transformer.resblocks[{name}]").register_forward_hook(get_output(name))
-
     iteration = 0
     train_losses, train_cls_losses, train_ortho_losses = [], [], []
     train_preds, train_labels, train_spurious = [], [], []
@@ -128,28 +119,12 @@ if __name__=="__main__":
         
         for data in tqdm(train_loader, f'Epoch: {epoch:03d}'):
             images, attrs, _ = data
-            images = images.to("cuda")
             
-            outputs = model(images)
+            model.hooker.clear()
+            outputs = model(images.to("cuda"))
             
             cls_loss = cls_loss_fn(outputs, attrs[:,0].to("cuda"))
-            
-            tmp_features = defaultdict(list)
-            if args.last_only: all_keys = ["23"]
-            elif args.last_2: all_keys = ["22", "23"]
-            else: all_keys = list(range(24))
-            
-            for key in all_keys:
-                for i in lora_idxs:
-                    loralib.set_used_lora_target(model, lora_idxs, [i], key)
-                    model(images)
-                    img_feat = all_features[key]
-                    img_feat = model.model.visual.early_exit_proj(img_feat)
-                    img_feat = img_feat / img_feat.norm(dim=-1, keepdim=True)
-                    tmp_features[i].append(img_feat @ desc_feats.t())
-            loralib.set_used_lora(model, lora_idxs)
-            ortho_loss = ortho_loss_fn(tmp_features, args.l1)
-            
+            ortho_loss = model.hooker.return_loss()
             loss = args.lambda_cls * cls_loss + args.lambda_ortho * ortho_loss
             
             optimizer.zero_grad()
@@ -192,11 +167,10 @@ if __name__=="__main__":
         torch.save(optimizer.state_dict(), save_dir + f'epoch{epoch}_op.pt')
     
         # Evaluation on test set
-        print("\nEvaluating on Test Set...")
         model.eval()
         with torch.no_grad():
             worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc="Eval CLIP+LoRA"))
-        print(f"Test Set - Average Accuracy: {avg_acc:.2f}, Worst Group Accuracy: {worst_acc:.2f}")
+        print(f"Epoch {epoch}) Test Set - Average Accuracy: {avg_acc:.2f}, Worst Group Accuracy: {worst_acc:.2f}")
         print(f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]")
         model.train()
     wandb.finish()

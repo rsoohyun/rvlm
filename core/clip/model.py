@@ -6,6 +6,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ..loralib import LoRAInjectedLinear, LoRAInjectedMultiheadAttention
+
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -181,15 +183,49 @@ class ResidualAttentionBlock(nn.Module):
         ]))
         self.ln_2 = LayerNorm(d_model)
         self.attn_mask = attn_mask
+        
+        self.hooker = None
 
     def attention(self, x: torch.Tensor):
         self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
         return self.attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
 
     def forward(self, x: torch.Tensor):
-        x = x + self.attention(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
-        return x
+        attn_lora = isinstance(self.attn, LoRAInjectedMultiheadAttention)
+        mlp_lora = isinstance(self.mlp.c_fc, LoRAInjectedLinear)
+        
+        if self.hooker is not None and (attn_lora or mlp_lora):
+            att_output = self.attention(self.ln_1(x))
+            if not attn_lora: att_output = {k:att_output for k in ['org'] + list(range(self.hooker.num_lora))}
+            x = {k: x + v for k,v in att_output.items()}
+            
+            if not mlp_lora:
+                new_x = {k: v + self.mlp(self.ln_2(v)) for k,v in x.items()}
+            else:
+                new_x = {}
+                for k, v in x.items():
+                    tmp_x = self.ln_2(v)
+                    tmp_x = self.mlp.c_fc(tmp_x)[k]
+                    tmp_x = self.mlp.gelu(tmp_x)
+                    tmp_x = self.mlp.c_proj(tmp_x)[k]
+                    new_x[k] = v + tmp_x
+            self.hooker.compute_loss(new_x)
+            return new_x['org']
+        else:
+            if attn_lora:
+                x = x + self.attention(self.ln_1(x))['org']
+            else:
+                x = x + self.attention(self.ln_1(x))
+            
+            if mlp_lora:
+                tmp_x = self.ln_2(x)
+                tmp_x = self.mlp.c_fc(tmp_x)['org']
+                tmp_x = self.mlp.gelu(tmp_x)
+                tmp_x = self.mlp.c_proj(tmp_x)['org']
+                x = x + tmp_x
+            else:
+                x = x + self.mlp(self.ln_2(x))
+            return x
 
 
 class Transformer(nn.Module):
@@ -241,9 +277,9 @@ class VisionTransformer(nn.Module):
     
     def early_exit_proj(self, x: torch.Tensor):
         x = x.permute(1, 0, 2)
-        x = self.ln_post(x[:, 0, :])
+        x = self.ln_post(x[:, 0, :].to(self.ln_post.weight.device))
         if self.proj is not None:
-            x = x @ self.proj
+            x = x.to(self.proj.device) @ self.proj
         return x
 
 

@@ -21,8 +21,9 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--arch", type=str, default="CLIP")
-    parser.add_argument("--dataset", type=str, default="waterbird")
+    parser.add_argument("--dataset", type=str, default="waterbird", choices=['waterbird', 'celeba'])
     parser.add_argument("--n_cls", type=int, default=2)
+    parser.add_argument("--prompt_id", type=int, default=0)
     
     parser.add_argument("--r", type=int, default=4)
     parser.add_argument("--num_lora", type=int, default=4)
@@ -41,11 +42,9 @@ if __name__=="__main__":
     parser.add_argument("--wd", type=float, default=5e-5)
     
     parser.add_argument("--lambda_cls", type=float, default=1.)
-    parser.add_argument("--feat_ortho", action="store_true")
-    parser.add_argument("--lambda_feat_ortho", type=float, default=1.)
+    parser.add_argument("--lambda_feat_ortho", type=float, default=0.)
+    parser.add_argument("--lambda_param_ortho", type=float, default=0.)
     parser.add_argument("--l1", action="store_true")
-    parser.add_argument("--param_ortho", action="store_true")
-    parser.add_argument("--lambda_param_ortho", type=float, default=1.)
     parser.add_argument("--only_wA", action="store_true")
     parser.add_argument("--compare_org", action="store_true")
     
@@ -86,9 +85,8 @@ if __name__=="__main__":
     loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules=lora_modules)
     print('{} w/  LoRA: {:.1f}M'.format(args.arch, sum(param.numel() for param in model.parameters())/1000000.0))
     
-    train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess)
+    train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess, args.prompt_id)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
-    
     test_dataset = load_dataset(args.data_dir, args.dataset, "test", model.preprocess, args.prompt_id)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers)
 
@@ -105,7 +103,7 @@ if __name__=="__main__":
     _, trainable_params = loralib.get_lora_params(model, fc=True, idxs=lora_idxs)
     optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
     
-    if args.feat_ortho:
+    if args.lambda_feat_ortho > 0.:
         all_features = {}
         def get_output(name):
             def hook(model, input, output):
@@ -143,8 +141,8 @@ if __name__=="__main__":
             outputs = model(images)
             cls_loss = cls_loss_fn(outputs, attrs[:,0].to("cuda"))
             
-            ortho_loss = 0
-            if args.feat_ortho:
+            ortho_loss = torch.tensor([0]).cuda()
+            if args.lambda_feat_ortho > 0.:
                 tmp_features = defaultdict(list)
                 if args.lora_w_pretrain:
                     all_keys = list(all_features.keys())
@@ -159,7 +157,7 @@ if __name__=="__main__":
                         for i in lora_idxs:
                             tmp_features[i].append(all_features[k.replace("lora0", f"lora{i}")])
                 ortho_loss += args.lambda_feat_ortho * ortho_feat_loss_fn(tmp_features, args.l1)
-            if args.param_ortho:
+            if args.lambda_param_ortho > 0.:
                 tmp_params = defaultdict(list)
                 org_params = []
                 for name, param in model.model.visual.transformer.resblocks.named_parameters():
@@ -219,11 +217,10 @@ if __name__=="__main__":
         torch.save(optimizer.state_dict(), save_dir + f'epoch{epoch}_op.pt')
     
         # Evaluation on test set
-        print("\nEvaluating on Test Set...")
         model.eval()
         with torch.no_grad():
             worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc="Eval CLIP+LoRA"))
-        print(f"Test Set - Average Accuracy: {avg_acc:.2f}, Worst Group Accuracy: {worst_acc:.2f}")
+        print(f"Epoch {epoch}) Test Set - Average Accuracy: {avg_acc:.2f}, Worst Group Accuracy: {worst_acc:.2f}")
         print(f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]")
         model.train()
     wandb.finish()
