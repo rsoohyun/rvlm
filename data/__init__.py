@@ -1,5 +1,6 @@
 from .dataset import WaterBirdsDataset, CelebA
 from .transforms import transforms_preprcs
+from .templates import imagenet_templates
 
 
 def load_dataset(data_dir, dataset_name, split, transform=None, prompt_id=0):

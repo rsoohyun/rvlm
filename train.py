@@ -27,7 +27,7 @@ if __name__=="__main__":
     
     parser.add_argument("--r", type=int, default=4)
     parser.add_argument("--num_lora", type=int, default=4)
-    parser.add_argument("--lora_alpha", type=float, default=4.)
+    parser.add_argument("--lora_alpha", type=float, default=1.)
     parser.add_argument("--lora_dropout", type=float, default=0.)
     parser.add_argument("--lora_modules", type=str, default="q,v")
     parser.add_argument("--lora_w_pretrain", action="store_true")
@@ -38,6 +38,7 @@ if __name__=="__main__":
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=16)
+    parser.add_argument("--optim", type=str, default="adamw", choices=["adamw", "sgd"])
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--wd", type=float, default=5e-5)
     
@@ -88,7 +89,7 @@ if __name__=="__main__":
     train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess, args.prompt_id)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
     test_dataset = load_dataset(args.data_dir, args.dataset, "test", model.preprocess, args.prompt_id)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, drop_last=False, num_workers=args.num_workers)
 
     cls_loss_fn = nn.CrossEntropyLoss()
     ortho_feat_loss_fn = losses.OrthoFeatLoss(lora_pairs, args)
@@ -101,7 +102,9 @@ if __name__=="__main__":
     wandb.define_metric("step/*", step_metric="step/iter")
     loralib.set_used_lora(model, lora_idxs)
     _, trainable_params = loralib.get_lora_params(model, fc=True, idxs=lora_idxs)
-    optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
+    
+    if args.optim=="adamw": optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
+    elif args.optim=="sgd": optimizer = optim.SGD(trainable_params, lr=args.lr, momentum=0.9, weight_decay=args.wd)
     
     if args.lambda_feat_ortho > 0.:
         all_features = {}
@@ -208,7 +211,7 @@ if __name__=="__main__":
                     "step/train_worst_acc": train_worst_acc,
                     "step/train_avg_acc": train_avg_acc,
                 })
-                print(f'\nIteration: {iteration:06d}, LR: {lr:.06f}, L: {train_loss:.03f}, L_cls: {train_cls_loss:.03f}, L_ortho: {train_ortho_loss:.03f}')
+                # print(f'\nIteration: {iteration:06d}, LR: {lr:.06f}, L: {train_loss:.03f}, L_cls: {train_cls_loss:.03f}, L_ortho: {train_ortho_loss:.03f}')
 
                 train_losses, train_cls_losses, train_ortho_losses = [], [], []
                 train_preds, train_labels, train_spurious = [], [], []

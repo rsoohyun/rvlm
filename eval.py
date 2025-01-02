@@ -68,7 +68,7 @@ if __name__=="__main__":
     
     parser.add_argument("--r", type=int, default=4)
     parser.add_argument("--num_lora", type=int, default=4)
-    parser.add_argument("--lora_alpha", type=float, default=4.)
+    parser.add_argument("--lora_alpha", type=float, default=1.)
     parser.add_argument("--lora_dropout", type=float, default=0.)
     parser.add_argument("--lora_modules", type=str, default="q,v")
     
@@ -79,12 +79,13 @@ if __name__=="__main__":
     
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--save_dir", type=str, default="./experiments/models/CLIP@SepLoRA@r4")
+    parser.add_argument("--log_path", type=str, default="./eval_log.txt")
     
     parser.add_argument("--eval_org", action="store_true")
     args = parser.parse_args()
     
     utils.set_seed(args.seed)
-    f = open('./eval_log.txt', 'a')
+    f = open(args.log_path, 'a')
     
     ## Load data and model
     if args.arch == "CLIP":

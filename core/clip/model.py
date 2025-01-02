@@ -185,7 +185,6 @@ class ResidualAttentionBlock(nn.Module):
         self.attn_mask = attn_mask
         
         self.hooker = None
-        self.hooker_save = None
 
     def attention(self, x: torch.Tensor):
         self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None

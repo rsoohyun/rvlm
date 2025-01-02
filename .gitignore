@@ -167,3 +167,5 @@ wandb/
 demo.py
 _deprecated/
 eval_log.txt
+*.txt
+*.sh

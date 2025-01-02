@@ -10,7 +10,7 @@ from collections import defaultdict
 
 import wandb
 
-from data import load_dataset
+from data import load_dataset, imagenet_templates
 from core import clip, loralib, losses, utils
 from eval import evaluate, infer
 from utils import *
@@ -38,6 +38,7 @@ if __name__=="__main__":
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--num_workers", type=int, default=16)
+    parser.add_argument("--optim", type=str, default="adamw", choices=["adamw", "sgd"])
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--wd", type=float, default=5e-5)
     
@@ -86,7 +87,7 @@ if __name__=="__main__":
     train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess, args.prompt_id)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
     test_dataset = load_dataset(args.data_dir, args.dataset, "test", model.preprocess, args.prompt_id)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, drop_last=False, num_workers=args.num_workers)
 
     cls_loss_fn = nn.CrossEntropyLoss()
     ortho_loss_fn = losses.OrthoFeatLoss(lora_pairs, args=args)
@@ -96,12 +97,16 @@ if __name__=="__main__":
     wandb.define_metric("step/*", step_metric="step/iter")
     loralib.set_used_lora(model, lora_idxs)
     _, trainable_params = loralib.get_lora_params(model, fc=True, idxs=lora_idxs)
-    optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
     
-    all_descs = [f"A photo of a bird with {desc.lower()}" for desc in train_dataset.all_descs]
-    desc_feats = model.model.encode_text(clip.tokenize(all_descs).to("cuda"))
-    desc_feats = desc_feats / desc_feats.norm(dim=1, keepdim=True)
-    desc_feats = desc_feats.detach()
+    if args.optim=="adamw": optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
+    elif args.optim=="sgd": optimizer = optim.SGD(trainable_params, lr=args.lr, momentum=0.9, weight_decay=args.wd)
+    
+    all_descs = [[template.format(f"bird with {desc.lower()}") for template in imagenet_templates] for desc in train_dataset.all_descs]
+    all_descs = [model.model.encode_text(clip.tokenize(desc).to("cuda")) for desc in all_descs]
+    all_descs = [desc / desc.norm(dim=-1, keepdim=True) for desc in all_descs]
+    all_descs = [desc.mean(dim=0) for desc in all_descs]
+    all_descs = [desc / desc.norm() for desc in all_descs]
+    desc_feats = torch.stack(all_descs, dim=0).detach()
     
     target_layers = [str(i) for i in range(24-args.last_num, 24)]
     model.set_hooker(target_layers, args.num_lora, desc_feats, ortho_loss_fn, args.l1)
@@ -159,7 +164,7 @@ if __name__=="__main__":
                     "step/train_worst_acc": train_worst_acc,
                     "step/train_avg_acc": train_avg_acc,
                 })
-                print(f'\nIteration: {iteration:06d}, LR: {lr:.06f}, L: {train_loss:.03f}, L_cls: {train_cls_loss:.03f}, L_ortho: {train_ortho_loss:.03f}')
+                # print(f'\nIteration: {iteration:06d}, LR: {lr:.06f}, L: {train_loss:.03f}, L_cls: {train_cls_loss:.03f}, L_ortho: {train_ortho_loss:.03f}')
 
                 train_losses, train_cls_losses, train_ortho_losses = [], [], []
                 train_preds, train_labels, train_spurious = [], [], []
