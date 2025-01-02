@@ -68,6 +68,7 @@ if __name__=="__main__":
     save_dir += f"@r{args.r}/"
     os.makedirs(save_dir, exist_ok=True)
     write_json(f"{save_dir}config.json", vars(args))
+    f = open(f"{save_dir}log.txt", 'a')
     
     if args.resume_id:
         wandb.init(project="rvlm", id=args.resume_id, resume=True)
@@ -127,9 +128,6 @@ if __name__=="__main__":
                     eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
     
     iteration = 0
-    train_losses, train_cls_losses, train_ortho_losses = [], [], []
-    train_preds, train_labels, train_spurious = [], [], []
-    
     for epoch in range(1, args.epochs+1):
         if os.path.exists(save_dir + f'epoch{epoch}.pt'):
             loralib.load_lora(model, save_dir + f'epoch{epoch}.pt')
@@ -137,7 +135,7 @@ if __name__=="__main__":
             iteration = epoch * len(train_loader)
             continue
         
-        for data in tqdm(train_loader, f'Epoch: {epoch:03d}'):
+        for data in tqdm(train_loader, desc=f'Epoch: {epoch:03d}', ncols=100):
             images, attrs, _ = data
             images = images.to("cuda")
             
@@ -184,37 +182,18 @@ if __name__=="__main__":
             loss.backward()
             optimizer.step()
 
-            train_losses.append(loss.item())
-            train_cls_losses.append(cls_loss.item())
-            train_ortho_losses.append(ortho_loss.item())
             _, preds = torch.max(outputs, 1)
-            train_preds.append(preds)
-            train_labels.append(attrs[:,0])
-            train_spurious.append(attrs[:,1])
+            train_worst_acc, train_avg_acc, _ = evaluate(preds, attrs[:,0], attrs[:,1])
 
             iteration += 1
-
-            if iteration % 10 == 0:
-                lr = [group['lr'] for group in optimizer.param_groups][0]
-                train_loss = np.mean(train_losses)
-                train_cls_loss = np.mean(train_cls_losses)
-                train_ortho_loss = np.mean(train_ortho_losses)
-                
-                train_preds, train_labels, train_spurious = torch.concat(train_preds, dim=0).detach().cpu().numpy(), torch.concat(train_labels, dim=0).detach().cpu().numpy(), torch.concat(train_spurious, dim=0).detach().cpu().numpy()
-                train_worst_acc, train_avg_acc, _ = evaluate(train_preds, train_labels, train_spurious)
-                
-                wandb.log({
-                    "step/iter": iteration,
-                    "step/loss": train_loss,
-                    "step/loss_cls": train_cls_loss,
-                    "step/loss_ortho": train_ortho_loss,
-                    "step/train_worst_acc": train_worst_acc,
-                    "step/train_avg_acc": train_avg_acc,
-                })
-                # print(f'\nIteration: {iteration:06d}, LR: {lr:.06f}, L: {train_loss:.03f}, L_cls: {train_cls_loss:.03f}, L_ortho: {train_ortho_loss:.03f}')
-
-                train_losses, train_cls_losses, train_ortho_losses = [], [], []
-                train_preds, train_labels, train_spurious = [], [], []
+            wandb.log({
+                "step/iter": iteration,
+                "step/loss": loss.item(),
+                "step/loss_cls": cls_loss.item(),
+                "step/loss_ortho": ortho_loss.item(),
+                "step/train_worst_acc": train_worst_acc,
+                "step/train_avg_acc": train_avg_acc,
+            })
 
         loralib.save_lora(model, save_dir + f'epoch{epoch}.pt', idxs=lora_idxs)
         torch.save(optimizer.state_dict(), save_dir + f'epoch{epoch}_op.pt')
@@ -223,7 +202,12 @@ if __name__=="__main__":
         model.eval()
         with torch.no_grad():
             worst_acc, avg_acc, accs_by_group = evaluate(*infer(model, test_loader, desc="Eval CLIP+LoRA"))
+        f.write(f"Epoch {epoch}) Test Set - Average Accuracy: {avg_acc:.2f}, Worst Group Accuracy: {worst_acc:.2f}\n")
+        f.write(f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]\n\n")
         print(f"Epoch {epoch}) Test Set - Average Accuracy: {avg_acc:.2f}, Worst Group Accuracy: {worst_acc:.2f}")
         print(f"[{accs_by_group[0]:.2f}, {accs_by_group[1]:.2f}, {accs_by_group[2]:.2f}, {accs_by_group[3]:.2f}]")
         model.train()
+    
     wandb.finish()
+    f.write('\n')
+    f.close()
