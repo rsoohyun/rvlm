@@ -121,8 +121,9 @@ def save_lora(model, path, fc=True, idxs=[]):
     for key in checkpoint.keys():
         if fc and (key in ["fc.weight", "fc.bias"]): keys.append(key)
         for i in idxs:
-            if f'lora{i}' in key: keys.append(key)
-            break
+            if f'lora{i}' in key: 
+                keys.append(key)
+                break
     checkpoint = {k:v for k,v in checkpoint.items() if k in keys}
     torch.save(checkpoint, path)
     
