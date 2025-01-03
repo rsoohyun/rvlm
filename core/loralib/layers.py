@@ -359,9 +359,11 @@ class LoRAInjectedLinear(nn.Module):
 
     def forward(self, x: torch.Tensor):
         output = {}
+        output_feat = {}
         result = self.org_linear(x) if not self.lora_only else 0
         for i in range(self.num_lora):
             tmp = eval(f'self.lora{i}_A')(x)
+            output_feat[i] = tmp
             tmp = eval(f'self.lora{i}_B')(tmp)
             output[i] = self.lora_dropout(tmp) * self.scaling
             if i in self.used_lora:
@@ -369,7 +371,7 @@ class LoRAInjectedLinear(nn.Module):
         output['org'] = result
         if self.feat_loss_fn is not None: 
             if self.lora_w_pretrain: loss = self.feat_loss_fn({k:v+self.org_linear(x) for k,v in output.keys()})
-            else: loss = self.feat_loss_fn(output)
+            else: loss = self.feat_loss_fn(output_feat)
             return [output, loss]
         return output
 

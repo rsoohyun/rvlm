@@ -107,26 +107,6 @@ if __name__=="__main__":
     if args.optim=="adamw": optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
     elif args.optim=="sgd": optimizer = optim.SGD(trainable_params, lr=args.lr, momentum=0.9, weight_decay=args.wd)
     
-    # if args.lambda_feat_ortho > 0.:
-    #     all_features = {}
-    #     def get_output(name):
-    #         def hook(model, input, output):
-    #             all_features[name] = output
-    #         return hook
-        
-    #     if args.lora_w_pretrain:
-    #         for name, submodule in model.model.visual.transformer.resblocks.named_modules():
-    #             idx = name.split('.')[0]
-    #             param = '.'.join(name.split('.')[1:])
-    #             if isinstance(submodule, loralib.LoRAInjectedLinear):
-    #                 eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
-    #     else:
-    #         for name, submodule in model.model.visual.transformer.resblocks.named_modules():
-    #             idx = name.split('.')[0]
-    #             param = '.'.join(name.split('.')[1:])
-    #             if ("lora" in name) and name.endswith('_A'): 
-    #                 eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
-    
     iteration = 0
     for epoch in range(1, args.epochs+1):
         if os.path.exists(save_dir + f'epoch{epoch}.pt'):
@@ -144,7 +124,6 @@ if __name__=="__main__":
             cls_loss = cls_loss_fn(outputs, attrs[:,0].to("cuda"))
             
             ortho_loss = torch.tensor([0.]).cuda()
-            import pdb; pdb.set_trace()
             if feat_loss is not None: ortho_loss += args.lambda_feat_ortho * feat_loss
             if args.lambda_param_ortho > 0.:
                 tmp_params = defaultdict(list)
