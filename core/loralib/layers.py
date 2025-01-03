@@ -318,6 +318,8 @@ class LoRAInjectedLinear(nn.Module):
         r: int = 0, 
         lora_alpha: int = 1, 
         lora_dropout: float = 0.,
+        feat_loss_fn=None,
+        lora_w_pretrain=False,
         **kwargs
     ):
         super().__init__()
@@ -345,6 +347,8 @@ class LoRAInjectedLinear(nn.Module):
         self.used_lora = list(range(self.num_lora))
         self.lora_only = False
         self.scaling = self.lora_alpha / self.r
+        self.feat_loss_fn = feat_loss_fn
+        self.lora_w_pretrain = lora_w_pretrain
         
     def init_lora_params(self):
         # initialize B the same way as the default for nn.Linear and A to zero
@@ -363,6 +367,10 @@ class LoRAInjectedLinear(nn.Module):
             if i in self.used_lora:
                 result += output[i]
         output['org'] = result
+        if self.feat_loss_fn is not None: 
+            if self.lora_w_pretrain: loss = self.feat_loss_fn({k:v+self.org_linear(x) for k,v in output.keys()})
+            else: loss = self.feat_loss_fn(output)
+            return [output, loss]
         return output
 
 
@@ -375,6 +383,8 @@ class LoRAInjectedMultiheadAttention(nn.Module):
         r: int = 0, 
         lora_alpha: int = 1, 
         lora_dropout: float = 0.,
+        feat_loss_fn=None,
+        lora_w_pretrain=False,
         **kwargs
     ):
         super().__init__()
@@ -421,10 +431,10 @@ class LoRAInjectedMultiheadAttention(nn.Module):
             
         # apply lora
         self.num_lora = num_lora
-        if "q" in lora_modules: self.q_proj = LoRAInjectedLinear(self.q_proj, num_lora, r, lora_alpha, lora_dropout)
-        if "k" in lora_modules: self.k_proj = LoRAInjectedLinear(self.k_proj, num_lora, r, lora_alpha, lora_dropout)
-        if "v" in lora_modules: self.v_proj = LoRAInjectedLinear(self.v_proj, num_lora, r, lora_alpha, lora_dropout)
-        if "out" in lora_modules: self.out_proj = LoRAInjectedLinear(self.out_proj, num_lora, r, lora_alpha, lora_dropout)
+        if "q" in lora_modules: self.q_proj = LoRAInjectedLinear(self.q_proj, num_lora, r, lora_alpha, lora_dropout, feat_loss_fn, lora_w_pretrain)
+        if "k" in lora_modules: self.k_proj = LoRAInjectedLinear(self.k_proj, num_lora, r, lora_alpha, lora_dropout, feat_loss_fn, lora_w_pretrain)
+        if "v" in lora_modules: self.v_proj = LoRAInjectedLinear(self.v_proj, num_lora, r, lora_alpha, lora_dropout, feat_loss_fn, lora_w_pretrain)
+        if "out" in lora_modules: self.out_proj = LoRAInjectedLinear(self.out_proj, num_lora, r, lora_alpha, lora_dropout, feat_loss_fn, lora_w_pretrain)
 
     def forward(self, query, key, value, key_padding_mask= None, need_weights= True, attn_mask= None, average_attn_weights=True, is_causal=False):
         why_not_fast_path = ''
@@ -470,10 +480,22 @@ class LoRAInjectedMultiheadAttention(nn.Module):
             head_dim = embed_dim.div(self.num_heads, rounding_mode="trunc")
         else:
             head_dim = embed_dim // self.num_heads
+        
+        feat_loss = []
             
         q_all = self.q_proj(query)
         k_all = self.k_proj(key)
         v_all = self.v_proj(value)
+        
+        if isinstance(q_all, list): 
+            feat_loss.append(q_all[1])
+            q_all = q_all[0]
+        if isinstance(k_all, list): 
+            feat_loss.append(k_all[1])
+            k_all = k_all[0]
+        if isinstance(v_all, list): 
+            feat_loss.append(v_all[1])
+            v_all = v_all[0]
         
         if not isinstance(q_all, dict): q_all = {i:q_all for i in ['org'] + list(range(self.num_lora))}
         if not isinstance(k_all, dict): k_all = {i:k_all for i in ['org'] + list(range(self.num_lora))}
@@ -564,6 +586,9 @@ class LoRAInjectedMultiheadAttention(nn.Module):
                     attn_output.transpose(0, 1).contiguous().view(tgt_len * bsz, embed_dim)
                 )
                 attn_output = self.out_proj(attn_output)
+                if isinstance(attn_output, list): 
+                    if key=='org': feat_loss.append(attn_output[1])
+                    attn_output = attn_output[0]
                 if isinstance(attn_output, dict): attn_output = attn_output[key]
                 attn_output = attn_output.view(tgt_len, bsz, attn_output.size(1))
 
@@ -593,6 +618,9 @@ class LoRAInjectedMultiheadAttention(nn.Module):
                 )
 
                 attn_output = self.out_proj(attn_output)
+                if isinstance(attn_output, list): 
+                    if key=='org': feat_loss.append(attn_output[1])
+                    attn_output = attn_output[0]
                 if isinstance(attn_output, dict): attn_output = attn_output[key]
                 attn_output = attn_output.view(tgt_len, bsz, attn_output.size(1))
                 if not is_batched:
@@ -607,4 +635,4 @@ class LoRAInjectedMultiheadAttention(nn.Module):
                 attn_output_all[key] = attn_output
                 attn_output_weights_all[key] = attn_output_weights
         
-        return attn_output_all, attn_output_weights_all
+        return attn_output_all, attn_output_weights_all, feat_loss

@@ -84,19 +84,19 @@ if __name__=="__main__":
         raise NotImplementedError(f'{args.arch} is not implemented yet.')
     print('{} w/o LoRA: {:.1f}M'.format(args.arch, sum(param.numel() for param in model.parameters())/1000000.0))
     
-    loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules=lora_modules)
+    cls_loss_fn = nn.CrossEntropyLoss()
+    ortho_feat_loss_fn = losses.OrthoFeatLoss(lora_pairs, args) if args.lambda_feat_ortho > 0. else None
+    ortho_param_loss_fn = losses.OrthoParamLoss(lora_pairs, args.compare_org)
+    if args.only_wA and args.compare_org:
+        raise NotImplementedError('We cannot compare wA with the original weight.')
+    
+    loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules, ortho_feat_loss_fn, args.lora_w_pretrain)
     print('{} w/  LoRA: {:.1f}M'.format(args.arch, sum(param.numel() for param in model.parameters())/1000000.0))
     
     train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess, args.prompt_id)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=args.num_workers)
     test_dataset = load_dataset(args.data_dir, args.dataset, "test", model.preprocess, args.prompt_id)
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, drop_last=False, num_workers=args.num_workers)
-
-    cls_loss_fn = nn.CrossEntropyLoss()
-    ortho_feat_loss_fn = losses.OrthoFeatLoss(lora_pairs, args)
-    ortho_param_loss_fn = losses.OrthoParamLoss(lora_pairs, args.compare_org)
-    if args.only_wA and args.compare_org:
-        raise NotImplementedError('We cannot compare wA with the original weight.')
     
     ## Train
     wandb.define_metric("step/iter")
@@ -107,25 +107,25 @@ if __name__=="__main__":
     if args.optim=="adamw": optimizer = optim.AdamW(trainable_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wd)
     elif args.optim=="sgd": optimizer = optim.SGD(trainable_params, lr=args.lr, momentum=0.9, weight_decay=args.wd)
     
-    if args.lambda_feat_ortho > 0.:
-        all_features = {}
-        def get_output(name):
-            def hook(model, input, output):
-                all_features[name] = output
-            return hook
+    # if args.lambda_feat_ortho > 0.:
+    #     all_features = {}
+    #     def get_output(name):
+    #         def hook(model, input, output):
+    #             all_features[name] = output
+    #         return hook
         
-        if args.lora_w_pretrain:
-            for name, submodule in model.model.visual.transformer.resblocks.named_modules():
-                idx = name.split('.')[0]
-                param = '.'.join(name.split('.')[1:])
-                if isinstance(submodule, loralib.LoRAInjectedLinear):
-                    eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
-        else:
-            for name, submodule in model.model.visual.transformer.resblocks.named_modules():
-                idx = name.split('.')[0]
-                param = '.'.join(name.split('.')[1:])
-                if ("lora" in name) and name.endswith('_A'): 
-                    eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
+    #     if args.lora_w_pretrain:
+    #         for name, submodule in model.model.visual.transformer.resblocks.named_modules():
+    #             idx = name.split('.')[0]
+    #             param = '.'.join(name.split('.')[1:])
+    #             if isinstance(submodule, loralib.LoRAInjectedLinear):
+    #                 eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
+    #     else:
+    #         for name, submodule in model.model.visual.transformer.resblocks.named_modules():
+    #             idx = name.split('.')[0]
+    #             param = '.'.join(name.split('.')[1:])
+    #             if ("lora" in name) and name.endswith('_A'): 
+    #                 eval(f"model.model.visual.transformer.resblocks[{idx}].{param}").register_forward_hook(get_output(name))
     
     iteration = 0
     for epoch in range(1, args.epochs+1):
@@ -139,25 +139,13 @@ if __name__=="__main__":
             images, attrs, _ = data
             images = images.to("cuda")
             
-            outputs = model(images)
+            #! feat_loss 계산 뭔가 이상함 확인 필요
+            outputs, desc_loss, feat_loss = model(images)
             cls_loss = cls_loss_fn(outputs, attrs[:,0].to("cuda"))
             
-            ortho_loss = torch.tensor([0]).cuda()
-            if args.lambda_feat_ortho > 0.:
-                tmp_features = defaultdict(list)
-                if args.lora_w_pretrain:
-                    all_keys = list(all_features.keys())
-                    for i in lora_idxs:
-                        loralib.set_used_lora(model, [i])
-                        model(images)
-                        tmp_features[i] = [all_features[k] for k in all_keys]
-                    loralib.set_used_lora(model, lora_idxs)
-                else:
-                    all_keys = [k for k in all_features.keys() if "lora0" in k]
-                    for k in all_keys:
-                        for i in lora_idxs:
-                            tmp_features[i].append(all_features[k.replace("lora0", f"lora{i}")])
-                ortho_loss += args.lambda_feat_ortho * ortho_feat_loss_fn(tmp_features, args.l1)
+            ortho_loss = torch.tensor([0.]).cuda()
+            import pdb; pdb.set_trace()
+            if feat_loss is not None: ortho_loss += args.lambda_feat_ortho * feat_loss
             if args.lambda_param_ortho > 0.:
                 tmp_params = defaultdict(list)
                 org_params = []
@@ -183,7 +171,7 @@ if __name__=="__main__":
             optimizer.step()
 
             _, preds = torch.max(outputs, 1)
-            train_worst_acc, train_avg_acc, _ = evaluate(preds, attrs[:,0], attrs[:,1])
+            train_worst_acc, train_avg_acc, _ = evaluate(preds.detach().cpu().numpy(), attrs[:,0].numpy(), attrs[:,1].numpy())
 
             iteration += 1
             wandb.log({

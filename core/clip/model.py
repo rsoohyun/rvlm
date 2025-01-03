@@ -184,19 +184,20 @@ class ResidualAttentionBlock(nn.Module):
         self.ln_2 = LayerNorm(d_model)
         self.attn_mask = attn_mask
         
-        self.hooker = None
-
     def attention(self, x: torch.Tensor):
         self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
-        return self.attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
+        output = self.attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)
+        if len(output)==3: return output[0], output[2]
+        return output[0]
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, return_dict=False):
         attn_lora = isinstance(self.attn, LoRAInjectedMultiheadAttention)
         mlp_lora = isinstance(self.mlp.c_fc, LoRAInjectedLinear)
         
+        feat_losses = []
         if attn_lora or mlp_lora:
-            att_output = self.attention(self.ln_1(x))
-            if not attn_lora: att_output = {k:att_output for k in ['org'] + list(range(self.hooker.num_lora))}
+            att_output, feat_loss = self.attention(self.ln_1(x))
+            if feat_loss is not None: feat_losses += feat_loss
             x = {k: x + v for k,v in att_output.items()}
             
             if not mlp_lora:
@@ -206,16 +207,22 @@ class ResidualAttentionBlock(nn.Module):
                 for k, v in x.items():
                     tmp_x = self.ln_2(v)
                     tmp_x = self.mlp.c_fc(tmp_x)[k]
+                    if isinstance(tmp_x, list): 
+                        feat_losses += tmp_x[1]
+                        tmp_x = tmp_x[0][k]
                     tmp_x = self.mlp.gelu(tmp_x)
-                    tmp_x = self.mlp.c_proj(tmp_x)[k]
+                    tmp_x = self.mlp.c_proj(tmp_x)
+                    if isinstance(tmp_x, list): 
+                        feat_losses += tmp_x[1]
+                        tmp_x = tmp_x[0][k]
                     new_x[k] = v + tmp_x
-            if self.hooker is not None: self.hooker.compute(new_x)
-            return new_x['org']
+            if return_dict:
+                return new_x, feat_losses
+            return new_x['org'], feat_losses
         else:
             x = x + self.attention(self.ln_1(x))
             x = x + self.mlp(self.ln_2(x))
-            if self.hooker is not None: self.hooker.compute({'org': x})
-            return x
+            return {'org': x} if return_dict else x
 
 
 class Transformer(nn.Module):
@@ -245,6 +252,8 @@ class VisionTransformer(nn.Module):
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
+        
+        self.loss_fn = None
 
     def forward(self, x: torch.Tensor):
         x = self.conv1(x)  # shape = [*, width, grid, grid]
@@ -255,7 +264,22 @@ class VisionTransformer(nn.Module):
         x = self.ln_pre(x)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer(x)
+        
+        # x = self.transformer(x)
+        desc_loss = []
+        feat_loss = []
+        for i, resblock in enumerate(self.transformer.resblocks):
+            x, feat_losses = resblock(x, return_dict=True)
+            feat_loss += feat_losses
+            if self.loss_fn is not None and i in self.target_layers:
+                x_for_loss = {k: self.early_exit_proj(v) for k,v in x.items() if k != 'org'}
+                x_for_loss = {k: v / v.norm(dim=-1, keepdim=True) for k,v in x_for_loss.items()}
+                x_for_loss = {k: v @ self.desc_emb.t() for k,v in x_for_loss.items()}
+                desc_loss.append(self.loss_fn({k: v for k,v in x_for_loss.items()}, self.l1))
+            x = x['org']
+        desc_loss = torch.stack(desc_loss, dim=0).mean() if len(desc_loss)>0 else None
+        feat_loss = torch.stack(feat_loss, dim=0).mean() if len(feat_loss)>0 else None
+        
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x[:, 0, :])
@@ -263,13 +287,13 @@ class VisionTransformer(nn.Module):
         if self.proj is not None:
             x = x @ self.proj
 
-        return x
+        return x, desc_loss, feat_loss
     
     def early_exit_proj(self, x: torch.Tensor):
         x = x.permute(1, 0, 2)
-        x = self.ln_post(x[:, 0, :].to(self.ln_post.weight.device))
+        x = self.ln_post(x[:, 0, :])
         if self.proj is not None:
-            x = x.to(self.proj.device) @ self.proj
+            x = x @ self.proj
         return x
 
 

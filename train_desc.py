@@ -82,7 +82,7 @@ if __name__=="__main__":
         raise NotImplementedError(f'{args.arch} is not implemented yet.')
     print('{} w/o LoRA: {:.1f}M'.format(args.arch, sum(param.numel() for param in model.parameters())/1000000.0))
     
-    loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules=lora_modules)
+    loralib.apply_lora(model, args.num_lora, args.r, args.lora_alpha, args.lora_dropout, lora_modules)
     print('{} w/  LoRA: {:.1f}M'.format(args.arch, sum(param.numel() for param in model.parameters())/1000000.0))
     
     train_dataset = load_dataset(args.data_dir, args.dataset, "train", model.preprocess, args.prompt_id)
@@ -109,8 +109,8 @@ if __name__=="__main__":
     all_descs = [desc / desc.norm() for desc in all_descs]
     desc_feats = torch.stack(all_descs, dim=0).detach()
     
-    target_layers = [str(i) for i in range(24-args.last_num, 24)]
-    model.set_hooker(target_layers, args.num_lora, desc_feats, ortho_loss_fn, args.l1)
+    target_layers = [i for i in range(24-args.last_num, 24)]
+    model.set_desc_loss_fn(target_layers, desc_feats, ortho_loss_fn, args.l1)
     
     iteration = 0
     for epoch in range(1, args.epochs+1):
@@ -123,11 +123,8 @@ if __name__=="__main__":
         for data in tqdm(train_loader, desc=f'Epoch: {epoch:03d}', ncols=100):
             images, attrs, _ = data
             
-            model.hooker.clear()
-            outputs = model(images.to("cuda"))
-            
+            outputs, ortho_loss, _ = model(images.to("cuda"))
             cls_loss = cls_loss_fn(outputs, attrs[:,0].to("cuda"))
-            ortho_loss = model.hooker.return_loss()
             loss = args.lambda_cls * cls_loss + args.lambda_ortho * ortho_loss
             
             optimizer.zero_grad()
@@ -135,7 +132,7 @@ if __name__=="__main__":
             optimizer.step()
             
             _, preds = torch.max(outputs, 1)
-            train_worst_acc, train_avg_acc, _ = evaluate(preds, attrs[:,0], attrs[:,1])
+            train_worst_acc, train_avg_acc, _ = evaluate(preds.detach().cpu().numpy(), attrs[:,0].numpy(), attrs[:,1].numpy())
 
             iteration += 1
             wandb.log({

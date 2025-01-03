@@ -36,20 +36,19 @@ class OrthoFeatLoss(nn.Module):
         loss = []
         for idx1, idx2 in self.pairs:
             features1, features2 = features[idx1], features[idx2]
-            for feature1, feature2 in zip(features1, features2):
-                if self.dot:
-                    dot_val = pairwise_dot(feature1, feature2, tau=self.tau).mean()
-                    if self.entropy:
-                        dot_val += compute_entropy(feature1, tau=self.tau).mean() \
-                              + compute_entropy(feature2, tau=self.tau).mean()
-                    loss.append(dot_val)
-                elif self.kl:
-                    loss.append(js_divergence(feature1, feature2, self.tau))
-                    #loss.append((-1) * self.loss_fn(F.log_softmax(feature1/self.tau, dim=-1), F.softmax(feature2/self.tau, dim=-1), reduction="batchmean"))
-                elif l1:
-                    loss.append(self.loss_fn(feature1, feature2, dim=-1).abs().mean())
-                else:
-                    loss.append(self.loss_fn(feature1, feature2, dim=-1).square().mean())
+            if self.dot:
+                dot_val = pairwise_dot(features1, features2, tau=self.tau).mean()
+                if self.entropy:
+                    dot_val += compute_entropy(features1, tau=self.tau).mean() \
+                            + compute_entropy(features2, tau=self.tau).mean()
+                loss.append(dot_val)
+            elif self.kl:
+                loss.append(js_divergence(features1, features2, self.tau))
+                #loss.append((-1) * self.loss_fn(F.log_softmax(features1/self.tau, dim=-1), F.softmax(features2/self.tau, dim=-1), reduction="batchmean"))
+            elif l1:
+                loss.append(self.loss_fn(features1, features2, dim=-1).abs().mean())
+            else:
+                loss.append(self.loss_fn(features1, features2, dim=-1).square().mean())
         return torch.stack(loss, dim=0).mean()
     
 class OrthoParamLoss(nn.Module):

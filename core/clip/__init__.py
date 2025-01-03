@@ -2,7 +2,6 @@ from torch import nn
 
 from .clip import *
 from .model import *
-from .loss_hooker import Hooker
 
 class CLIP_FT(nn.Module):
     def __init__(self, model_arch, device, n_cls=2):
@@ -20,13 +19,12 @@ class CLIP_FT(nn.Module):
         
         self.device = device
         
-    def set_hooker(self, target_layers, num_lora, desc_emb, loss_fn=None, l1=False):
-        self.hooker = Hooker(self, num_lora, desc_emb, loss_fn, l1)
-        
-        for name, submodule in self.model.visual.transformer.resblocks.named_modules():
-            if isinstance(submodule, ResidualAttentionBlock) and name in target_layers:
-                eval(f"self.model.visual.transformer.resblocks[{name}]").hooker = self.hooker
-        
+    def set_desc_loss_fn(self, target_layers, desc_emb, loss_fn=None, l1=False):
+        self.model.visual.desc_emb = desc_emb
+        self.model.visual.loss_fn = loss_fn
+        self.model.visual.l1 = l1
+        self.model.visual.target_layers = target_layers
+    
     def forward(self, x):
-        out = self.model.encode_image(x)
-        return self.fc(out)
+        out, desc_loss, feat_loss = self.model.encode_image(x)
+        return self.fc(out), desc_loss, feat_loss

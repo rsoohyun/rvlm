@@ -192,7 +192,7 @@ if __name__=="__main__":
                 optimizer.step()
 
                 _, preds = torch.max(outputs, 1)
-                train_worst_acc, train_avg_acc, _ = evaluate(preds, attrs[:,0], attrs[:,1])
+                train_worst_acc, train_avg_acc, _ = evaluate(preds.detach().cpu().numpy(), attrs[:,0].numpy(), attrs[:,1].numpy())
 
                 iteration += 1
                 wandb.log({

@@ -79,7 +79,7 @@ def find_modules(model, ancestor_class=["ResidualAttentionBlock"], search_class=
                 # Otherwise, yield it
                 yield parent, name, module
 
-def apply_lora(model, num_lora=1, r=4, lora_alpha=1, lora_dropout=0., visual_only=True, lora_modules=[]):
+def apply_lora(model, num_lora=1, r=4, lora_alpha=1, lora_dropout=0., lora_modules=[], feat_loss_fn=None, lora_w_pretrain=False, visual_only=True):
     target_blocks = [model.model.visual.transformer.resblocks] if visual_only else [model.model.visual.transformer.resblocks, model.model.transformer.resblocks]
     search_classes = []
     if "mlp" in lora_modules: 
@@ -91,10 +91,10 @@ def apply_lora(model, num_lora=1, r=4, lora_alpha=1, lora_dropout=0., visual_onl
     for target_block in target_blocks:
         for _module, name, _child_module in find_modules(target_block, ["ResidualAttentionBlock"], search_classes):
             if _child_module.__class__ == nn.Linear:
-                _tmp = LoRAInjectedLinear(_child_module, num_lora, r, lora_alpha, lora_dropout).to(device).to(dtype)
+                _tmp = LoRAInjectedLinear(_child_module, num_lora, r, lora_alpha, lora_dropout, feat_loss_fn, lora_w_pretrain).to(device).to(dtype)
                 _module._modules[name] = _tmp
             if _child_module.__class__ == nn.MultiheadAttention:
-                _tmp = LoRAInjectedMultiheadAttention(_child_module, lora_modules, num_lora, r, lora_alpha, lora_dropout).to(device).to(dtype)
+                _tmp = LoRAInjectedMultiheadAttention(_child_module, lora_modules, num_lora, r, lora_alpha, lora_dropout, feat_loss_fn, lora_w_pretrain).to(device).to(dtype)
                 _module._modules[name] = _tmp
 
 def get_lora_params(model, fc=True, idxs=[]):
